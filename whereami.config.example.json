@@ -1,0 +1,18 @@
+{
+  "repoRoots": ["/absolute/path/to/your/workspace"],
+  "include": ["your-repo-prefix"],
+  "baseBranch": "develop",
+  "autoFetch": true,
+  "liveWatch": true,
+  "watchDebounceMs": 1800,
+  "scanServerPort": 3010,
+  "output": "public/whereami-snapshot.json",
+  "watchIntervalMs": 3600000,
+  "scanLimits": {
+    "filesPerRepo": 900,
+    "apiFilesPerRepo": 2400,
+    "apiNodesPerScenario": 800,
+    "changedFiles": 80,
+    "nodesPerScenario": 26
+  }
+}
