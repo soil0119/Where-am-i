@@ -812,7 +812,7 @@ function extractEntities(repo, files, fileStatuses, teamChangedFiles, changeDeta
     }
   }
 
-  if (repo.type === "engine") {
+  if (repo.type === "engine" || entities.engineEndpoints.length > 0) {
     entities.engineFlows.push(
       ...buildEngineFlowEntities(repo, fileStatuses, teamSet, changeDetails),
     );
@@ -1197,10 +1197,12 @@ function buildEngineFlowEntities(repo, fileStatuses, teamSet, changeDetails) {
   ];
 
   return definitions
-    .filter((definition) => existsSync(path.join(repo.path, definition.file)))
     .map((definition) => {
       const detectedStatus = fileStatuses[definition.file] ??
         (teamSet.has(definition.file) ? "changed" : "stable");
+      const evidenceFile = existsSync(path.join(repo.path, definition.file))
+        ? definition.file
+        : `${repo.name} engine flow template`;
       return {
         id: `engine-flow:${definition.group}:${definition.step}-${definition.slug}`,
         repo: repo.name,
@@ -1211,7 +1213,7 @@ function buildEngineFlowEntities(repo, fileStatuses, teamSet, changeDetails) {
         path: definition.path,
         title: `${definition.step}. ${definition.title}`,
         summary: definition.summary,
-        evidence: `${definition.file} :: ${definition.evidence}`,
+        evidence: `${evidenceFile} :: ${definition.evidence}`,
         status: definition.status ?? detectedStatus,
         flowGroup: definition.group,
         flowStep: definition.step,
@@ -1608,7 +1610,7 @@ function buildScenario(id, label, description, repos) {
   const files = [];
   const briefing = [];
   const graphRepos = isEngineFlow
-    ? repos.filter((repo) => repo.type === "engine")
+    ? repos.filter((repo) => repo.type === "engine" || repo.entities.engineEndpoints.length > 0)
     : repos;
 
   graphRepos.forEach((repo, index) => {
@@ -1663,7 +1665,7 @@ function buildScenario(id, label, description, repos) {
     repos.flatMap((repo) => repo.entities.engineEndpoints),
     contextTokens,
     mode,
-    isEngineFlow ? 0 : apiEntityLimit ?? 12,
+    isEngineFlow ? config.scanLimits.apiNodesPerScenario : apiEntityLimit ?? 12,
   );
   const engineFlows = isEngineFlow
     ? repos.flatMap((repo) => repo.entities.engineFlows)
@@ -1688,7 +1690,7 @@ function buildScenario(id, label, description, repos) {
   );
 
   const selectedEntities = isEngineFlow
-    ? engineFlows
+    ? [...engineFlows, ...endpoints]
     : [...wrappers, ...routes, ...endpoints, ...docs, ...tests, ...dbFiles];
   const featureChanges = buildFeatureChanges(selectedFiles, selectedEntities, mode);
 
