@@ -83,6 +83,9 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(client, /SearchNodeAutoFocus/);
   assert.match(client, /findSearchTargetNode/);
   assert.match(client, /searchFocusScore/);
+  assert.match(client, /nodePositionOverrides/);
+  assert.match(client, /moveGraphNodes/);
+  assert.match(client, /nodesDraggable/);
   assert.doesNotMatch(client, /repo-main/);
   assert.doesNotMatch(client, /team-pr-chip/);
   assert.match(packageJson, /"name": "where-am-i"/);
@@ -98,6 +101,10 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(gitignore, /public\/whereami-snapshot\.json/);
   assert.match(gitignore, /whereami\.config\.json/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
+  assert.match(
+    await readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    /cursor:\s*grab/,
+  );
   assert.doesNotMatch(layout, /codex-preview|_sites-preview|themeColor|\bViewport\b/);
 
   await assert.rejects(access(new URL("app/_sites-preview", templateRoot)));

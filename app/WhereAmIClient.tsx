@@ -20,6 +20,7 @@ import {
   useReactFlow,
   type Edge,
   type Node,
+  type NodeChange,
   type NodeProps,
   type NodeTypes,
 } from "@xyflow/react";
@@ -136,6 +137,7 @@ type EntityNodeData = Record<string, unknown> & {
 };
 
 type EntityNode = Node<EntityNodeData, "entity">;
+type NodePositionOverrides = Record<string, { x: number; y: number }>;
 
 type BriefingItem = {
   type: "추가" | "변경" | "주의" | "정상";
@@ -1529,6 +1531,8 @@ export function WhereAmIClient() {
   const [leftPanelWidth, setLeftPanelWidth] = useState(286);
   const [leftPanelDraftWidth, setLeftPanelDraftWidth] = useState<number | null>(null);
   const [detailPanelHeight, setDetailPanelHeight] = useState(520);
+  const [nodePositionOverrides, setNodePositionOverrides] =
+    useState<NodePositionOverrides>({});
 
   useEffect(() => {
     let alive = true;
@@ -1725,10 +1729,6 @@ export function WhereAmIClient() {
     scenario.nodes[0];
   const selectedEdge =
     filteredGraph.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
-  const searchTargetNode = useMemo(
-    () => findSearchTargetNode(filteredGraph.nodes, query),
-    [filteredGraph.nodes, query],
-  );
 
   const filteredFeatureChanges = useMemo(() => {
     const featureChanges = scenario.featureChanges ?? [];
@@ -1772,6 +1772,7 @@ export function WhereAmIClient() {
     () => ({
       nodes: filteredGraph.nodes.map((node) => ({
         ...node,
+        position: nodePositionOverrides[node.id] ?? node.position,
         selected: node.id === selectedNode.id,
       })),
       edges: filteredGraph.edges.map((edge) => {
@@ -1801,7 +1802,17 @@ export function WhereAmIClient() {
         };
       }),
     }),
-    [filteredGraph, selectedEdge, selectedEdgeId, selectedNode.id],
+    [
+      filteredGraph,
+      nodePositionOverrides,
+      selectedEdge,
+      selectedEdgeId,
+      selectedNode.id,
+    ],
+  );
+  const searchTargetNode = useMemo(
+    () => findSearchTargetNode(filtered.nodes, query),
+    [filtered.nodes, query],
   );
   const scanDelta = normalizeScanDelta(snapshot?.scanDelta);
   const scanHistory = normalizeHistoryEvents(snapshot?.history);
@@ -1844,6 +1855,20 @@ export function WhereAmIClient() {
   const focusSearchNode = useCallback((nodeId: string) => {
     setSelectedEdgeId(null);
     setSelectedNodeId(nodeId);
+  }, []);
+
+  const moveGraphNodes = useCallback((changes: NodeChange<EntityNode>[]) => {
+    setNodePositionOverrides((current) => {
+      let next = current;
+
+      changes.forEach((change) => {
+        if (change.type !== "position" || !change.position) return;
+        if (next === current) next = { ...current };
+        next[change.id] = change.position;
+      });
+
+      return next;
+    });
   }, []);
 
   function selectScenario(nextScenarioId: ScenarioId) {
@@ -2257,7 +2282,8 @@ export function WhereAmIClient() {
               minZoom={0.45}
               nodeTypes={nodeTypes}
               nodes={filtered.nodes}
-              nodesDraggable={false}
+              nodesDraggable
+              onNodesChange={moveGraphNodes}
               onEdgeClick={(event, edge) => {
                 event.stopPropagation();
                 setSelectedEdgeId(edge.id);
