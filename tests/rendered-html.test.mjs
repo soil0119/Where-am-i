@@ -64,6 +64,7 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(client, /스캔 변화/);
   assert.match(client, /GraphMode/);
   assert.match(client, /전체 API/);
+  assert.match(client, /graph-filter-bar/);
   assert.match(client, /selectedRepoNames/);
   assert.match(client, /selectRepoForMap/);
   assert.match(client, /selectScanEvent/);

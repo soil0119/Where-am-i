@@ -2018,51 +2018,6 @@ export function WhereAmIClient() {
           ) : null}
 
           <section className="panel-section">
-            <h2>필터</h2>
-            <div className="view-toggle" aria-label="그래프 보기 범위">
-              {[
-                ["focus", "핵심"],
-                ["all", "전체"],
-                ["api", "전체 API"],
-                ["verify", "검증"],
-              ].map(([mode, label]) => (
-                <button
-                  key={mode}
-                  className={graphMode === mode ? "is-active" : ""}
-                  onClick={() => setGraphMode(mode as GraphMode)}
-                  type="button"
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <label className="search-box">
-              <Search size={17} />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="파일, API, repo 검색"
-              />
-            </label>
-            <label className="toggle-row">
-              <input
-                checked={changedOnly}
-                onChange={(event) => setChangedOnly(event.target.checked)}
-                type="checkbox"
-              />
-              변경 영향만
-            </label>
-            <label className="toggle-row">
-              <input
-                checked={riskOnly}
-                onChange={(event) => setRiskOnly(event.target.checked)}
-                type="checkbox"
-              />
-              확인 필요만
-            </label>
-          </section>
-
-          <section className="panel-section">
             <h2>상태</h2>
             <div className="status-grid">
               {Object.entries(statusMeta).map(([status, meta]) => (
@@ -2142,6 +2097,49 @@ export function WhereAmIClient() {
                 확인
               </span>
             </div>
+          </div>
+          <div className="graph-filter-bar" aria-label="그래프 필터">
+            <div className="view-toggle" aria-label="그래프 보기 범위">
+              {[
+                ["focus", "핵심"],
+                ["all", "전체"],
+                ["api", "전체 API"],
+                ["verify", "검증"],
+              ].map(([mode, label]) => (
+                <button
+                  key={mode}
+                  className={graphMode === mode ? "is-active" : ""}
+                  onClick={() => setGraphMode(mode as GraphMode)}
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <label className="search-box">
+              <Search size={17} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="파일, API, repo 검색"
+              />
+            </label>
+            <label className="toggle-row">
+              <input
+                checked={changedOnly}
+                onChange={(event) => setChangedOnly(event.target.checked)}
+                type="checkbox"
+              />
+              변경 영향만
+            </label>
+            <label className="toggle-row">
+              <input
+                checked={riskOnly}
+                onChange={(event) => setRiskOnly(event.target.checked)}
+                type="checkbox"
+              />
+              확인 필요만
+            </label>
           </div>
 
           <ReactFlowProvider>
