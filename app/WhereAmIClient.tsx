@@ -50,6 +50,10 @@ type EntityKind =
   | "wrapper"
   | "api"
   | "engine"
+  | "handler"
+  | "function"
+  | "external"
+  | "error"
   | "db"
   | "docs"
   | "test";
@@ -79,6 +83,14 @@ type ChangeSignal = {
   action: "added" | "deleted";
   kind: string;
   label: string;
+};
+
+type EvidenceItem = {
+  file: string;
+  line: number;
+  text: string;
+  source: "static" | "git" | "runtime" | "inferred";
+  confidence: number;
 };
 
 type FeatureChangeAction = "added" | "deleted" | "changed";
@@ -128,6 +140,8 @@ type EntityNodeData = Record<string, unknown> & {
   impact: string;
   summary: string;
   evidence: string;
+  evidenceItems?: EvidenceItem[];
+  confidence?: number;
   badges: string[];
   metrics?: Metric[];
   change?: ChangeDetail;
@@ -178,6 +192,7 @@ type RepoSummary = {
   routeCount: number;
   wrapperCount: number;
   engineEndpointCount: number;
+  codeFactCount?: number;
   warnings?: string[];
 };
 
@@ -264,6 +279,10 @@ const kindIcon: Record<EntityKind, LucideIcon> = {
   wrapper: Code2,
   api: Route,
   engine: ServerCog,
+  handler: Code2,
+  function: Code2,
+  external: ServerCog,
+  error: AlertTriangle,
   db: Database,
   docs: BookOpenCheck,
   test: TestTubeDiagonal,
@@ -574,8 +593,39 @@ function normalizeNode(node: EntityNode): EntityNode {
       status: normalizeStatus(node.data.status),
       badges: Array.isArray(node.data.badges) ? node.data.badges : [],
       change: normalizeChange(node.data.change),
+      evidenceItems: normalizeEvidenceItems(node.data.evidenceItems),
+      confidence:
+        typeof node.data.confidence === "number"
+          ? clamp(node.data.confidence, 0, 1)
+          : undefined,
     },
   };
+}
+
+function normalizeEvidenceItems(value: unknown): EvidenceItem[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return undefined;
+      const evidence = item as Partial<EvidenceItem>;
+      const source =
+        evidence.source === "git" ||
+        evidence.source === "runtime" ||
+        evidence.source === "inferred"
+          ? evidence.source
+          : "static";
+
+      return {
+        file: String(evidence.file ?? ""),
+        line: Number(evidence.line ?? 0),
+        text: String(evidence.text ?? ""),
+        source,
+        confidence: clamp(Number(evidence.confidence ?? 0), 0, 1),
+      };
+    })
+    .filter((item): item is EvidenceItem => Boolean(item?.file || item?.text))
+    .slice(0, 8);
 }
 
 function normalizeChange(value: unknown): ChangeDetail | undefined {
@@ -697,6 +747,10 @@ function normalizeHistoryEventType(value: unknown): ScanHistoryEventType {
 function normalizeEdge(edge: Edge): Edge {
   const status = normalizeStatus(edge.data?.status);
   const decorated = relation(edge.source, edge.target, String(edge.label ?? "uses"), status);
+  const confidence =
+    typeof edge.data?.confidence === "number"
+      ? clamp(edge.data.confidence, 0, 1)
+      : undefined;
 
   return {
     ...decorated,
@@ -704,6 +758,8 @@ function normalizeEdge(edge: Edge): Edge {
     data: {
       ...edge.data,
       status,
+      confidence,
+      evidenceItems: normalizeEvidenceItems(edge.data?.evidenceItems),
     },
   };
 }
@@ -724,6 +780,10 @@ function normalizeKind(value: unknown): EntityKind {
     value === "wrapper" ||
     value === "api" ||
     value === "engine" ||
+    value === "handler" ||
+    value === "function" ||
+    value === "external" ||
+    value === "error" ||
     value === "db" ||
     value === "docs" ||
     value === "test"
@@ -975,6 +1035,10 @@ function flowColumn(node: EntityNode) {
     wrapper: 1,
     api: 2,
     engine: 3,
+    handler: 3,
+    function: 3,
+    external: 4,
+    error: 4,
     db: 4,
     docs: 4,
     test: 4,
@@ -1238,6 +1302,86 @@ function ChangeSummary({ change }: { change?: ChangeDetail }) {
         <p>라인 preview 없이 파일 상태만 감지됐습니다.</p>
       )}
     </section>
+  );
+}
+
+function EvidenceList({
+  items,
+  fallback,
+}: {
+  items?: EvidenceItem[];
+  fallback?: string;
+}) {
+  const visibleItems = (items ?? []).filter(
+    (item) => item.file || item.text,
+  );
+
+  if (visibleItems.length === 0 && !fallback) return null;
+
+  return (
+    <section className="evidence-card">
+      <div className="change-card-header">
+        <h4>근거</h4>
+        <span>{visibleItems.length > 0 ? "static scan" : "summary"}</span>
+      </div>
+      {visibleItems.length > 0 ? (
+        <ul className="evidence-list">
+          {visibleItems.map((item, index) => (
+            <li key={`${item.file}-${item.line}-${index}`}>
+              <div>
+                <strong>
+                  {item.file}
+                  {item.line > 0 ? `:${item.line}` : ""}
+                </strong>
+                <span>{item.source} · {Math.round(item.confidence * 100)}%</span>
+              </div>
+              {item.text ? <code>{item.text}</code> : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>{fallback}</p>
+      )}
+    </section>
+  );
+}
+
+function EdgeSummary({ edge }: { edge: Edge }) {
+  const evidenceItems = normalizeEvidenceItems(edge.data?.evidenceItems);
+  const confidence =
+    typeof edge.data?.confidence === "number"
+      ? Math.round(edge.data.confidence * 100)
+      : null;
+
+  return (
+    <>
+      <div className="section-title-row">
+        <h2>선택 선</h2>
+        <span className="detail-status detail-status--changed">
+          {confidence !== null ? `${confidence}%` : "연결"}
+        </span>
+      </div>
+      <h3>{String(edge.label ?? "연결")}</h3>
+      <p>{String(edge.data?.kind ?? "static relation")}</p>
+      <dl className="detail-list">
+        <div>
+          <dt>source</dt>
+          <dd>{edge.source}</dd>
+        </div>
+        <div>
+          <dt>target</dt>
+          <dd>{edge.target}</dd>
+        </div>
+        <div>
+          <dt>근거</dt>
+          <dd>{String(edge.data?.evidence ?? "연결 규칙")}</dd>
+        </div>
+      </dl>
+      <EvidenceList
+        fallback={String(edge.data?.evidence ?? "연결 규칙으로 생성된 선입니다.")}
+        items={evidenceItems}
+      />
+    </>
   );
 }
 
@@ -1670,6 +1814,7 @@ export function WhereAmIClient() {
         node.data.summary,
         node.data.impact,
         node.data.evidence,
+        ...(node.data.evidenceItems ?? []).map((item) => item.text),
         ...node.data.badges,
       ]
         .join(" ")
@@ -1692,17 +1837,25 @@ export function WhereAmIClient() {
             node.data.kind === "wrapper" ||
             node.data.kind === "api" ||
             node.data.kind === "engine" ||
+            node.data.kind === "handler" ||
+            node.data.kind === "function" ||
+            node.data.kind === "external" ||
+            node.data.kind === "error" ||
             node.data.kind === "db")) ||
         graphMode === "all" ||
         (graphMode === "api" &&
           (node.data.kind === "ui" ||
             node.data.kind === "wrapper" ||
             node.data.kind === "api" ||
-            node.data.kind === "engine")) ||
+            node.data.kind === "engine" ||
+            node.data.kind === "handler" ||
+            node.data.kind === "function" ||
+            node.data.kind === "external")) ||
         (graphMode === "verify" &&
           (node.data.kind === "docs" ||
             node.data.kind === "test" ||
             node.data.kind === "api" ||
+            node.data.kind === "error" ||
             node.data.status === "risk"));
       const matchesChanged =
         !changedOnly ||
@@ -2394,7 +2547,9 @@ export function WhereAmIClient() {
           )}
 
           <section className="panel-section selected-section">
-            {selectedTeamUpdate ? (
+            {selectedEdge ? (
+              <EdgeSummary edge={selectedEdge} />
+            ) : selectedTeamUpdate ? (
               <>
                 <div className="section-title-row">
                   <h2>선택 지점</h2>
@@ -2448,6 +2603,10 @@ export function WhereAmIClient() {
                     <dd>{selectedNode.data.evidence}</dd>
                   </div>
                 </dl>
+                <EvidenceList
+                  fallback={selectedNode.data.evidence}
+                  items={selectedNode.data.evidenceItems}
+                />
                 <ChangeSummary change={selectedNode.data.change} />
               </>
             )}

@@ -1514,6 +1514,96 @@ button {
   padding: 8px 0 0;
 }
 
+.evidence-card {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: #334155;
+  margin-top: 12px;
+  overflow: hidden;
+}
+
+.evidence-card .change-card-header {
+  background: #f8fafc;
+}
+
+.evidence-card h4 {
+  color: #0f172a;
+  font-size: 12px;
+  margin: 0;
+}
+
+.evidence-card p {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 10px;
+}
+
+.evidence-list {
+  display: grid;
+  gap: 0;
+  list-style: none;
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 0;
+}
+
+.evidence-list li {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 6px;
+  padding: 9px 10px;
+}
+
+.evidence-list li:first-child {
+  border-top: 0;
+}
+
+.evidence-list li > div {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.evidence-list strong,
+.evidence-list code {
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo,
+    Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.evidence-list strong {
+  color: #0f172a;
+  font-size: 11px;
+  line-height: 1.35;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.evidence-list span {
+  color: #64748b;
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 800;
+}
+
+.evidence-list code {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  color: #334155;
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  padding: 7px;
+  white-space: pre-wrap;
+}
+
 .briefing-list {
   display: grid;
   gap: 10px;

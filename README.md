@@ -20,7 +20,8 @@ npm run build
 - 팀원이 바꾼 API/schema 브리핑
 - API path, Swagger, 테스트 정합성 확인 뷰
 - 전체 API catalog 표시
-- 노드 클릭 시 repo, 파일 경로, 연결 근거 확인
+- 함수, handler, DB, 외부 API, 에러코드 근거 라인 추적
+- 노드/선을 클릭해 repo, 파일 경로, 연결 근거 확인
 
 ## Repo Scan
 
