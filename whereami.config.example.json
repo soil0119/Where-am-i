@@ -13,6 +13,8 @@
     "apiFilesPerRepo": 2400,
     "apiNodesPerScenario": 800,
     "changedFiles": 80,
-    "nodesPerScenario": 26
+    "nodesPerScenario": 26,
+    "codeFactsPerRepo": 420,
+    "codeEdgesPerRepo": 620
   }
 }

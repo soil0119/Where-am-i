@@ -4,7 +4,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const configPath = path.join(rootDir, "whereami.config.json");
+const configPath = process.env.WHEREAMI_CONFIG_PATH
+  ? path.resolve(process.env.WHEREAMI_CONFIG_PATH)
+  : path.join(rootDir, "whereami.config.json");
 const args = new Set(process.argv.slice(2));
 const quiet = args.has("--quiet");
 const watch = args.has("--watch");
@@ -24,11 +26,37 @@ const defaultConfig = {
     changedFiles: 80,
     historyEvents: 24,
     nodesPerScenario: 26,
+    codeFactsPerRepo: 420,
+    codeEdgesPerRepo: 620,
   },
 };
 
 const config = readConfig();
 const fetchedRepos = new Set();
+const ignoredCallSymbols = new Set([
+  "if",
+  "for",
+  "while",
+  "switch",
+  "return",
+  "throw",
+  "catch",
+  "new",
+  "await",
+  "typeof",
+  "sizeof",
+  "make",
+  "append",
+  "len",
+  "cap",
+  "print",
+  "println",
+  "String",
+  "Number",
+  "Boolean",
+  "JSON",
+  "Error",
+]);
 
 await runOnce();
 
@@ -246,6 +274,8 @@ function emptyEntities() {
     uiFiles: [],
     engineEndpoints: [],
     engineFlows: [],
+    codeFacts: [],
+    codeEdges: [],
     docs: [],
     tests: [],
     dbFiles: [],
@@ -742,6 +772,7 @@ function extractEntities(repo, files, fileStatuses, teamChangedFiles, changeDeta
   const teamSet = new Set(teamChangedFiles);
   const docTexts = [];
   const testTexts = [];
+  const codeFiles = [];
 
   for (const file of files) {
     const absolute = path.join(repo.path, file);
@@ -759,6 +790,7 @@ function extractEntities(repo, files, fileStatuses, teamChangedFiles, changeDeta
         team: changeDetails.team[file],
       },
     };
+    codeFiles.push({ file, text, base });
 
     if (isUiFile(file)) {
       entities.uiFiles.push({
@@ -812,9 +844,16 @@ function extractEntities(repo, files, fileStatuses, teamChangedFiles, changeDeta
     }
   }
 
+  const codeTopology = extractCodeTopology(repo, codeFiles, [
+    ...entities.routes,
+    ...entities.engineEndpoints,
+  ]);
+  entities.codeFacts.push(...codeTopology.facts);
+  entities.codeEdges.push(...codeTopology.edges);
+
   if (repo.type === "engine" || entities.engineEndpoints.length > 0) {
     entities.engineFlows.push(
-      ...buildEngineFlowEntities(repo, fileStatuses, teamSet, changeDetails),
+      ...buildEngineFlowEntities(repo, entities.codeFacts, entities.engineEndpoints),
     );
   }
 
@@ -826,6 +865,8 @@ function extractEntities(repo, files, fileStatuses, teamChangedFiles, changeDeta
   entities.routes = dedupeApiRoutes(entities.routes).slice(0, config.scanLimits.apiNodesPerScenario);
   entities.engineEndpoints = dedupeApiRoutes(entities.engineEndpoints).slice(0, config.scanLimits.apiNodesPerScenario);
   entities.engineFlows = uniqueBy(entities.engineFlows, (item) => item.id).slice(0, 40);
+  entities.codeFacts = uniqueBy(entities.codeFacts, (item) => item.id).slice(0, config.scanLimits.codeFactsPerRepo);
+  entities.codeEdges = uniqueBy(entities.codeEdges, (item) => item.id).slice(0, config.scanLimits.codeEdgesPerRepo);
   entities.wrappers = uniqueBy(entities.wrappers, (item) => `${item.method} ${item.path} ${item.file}`).slice(0, 120);
   entities.uiFiles = uniqueBy(entities.uiFiles, (item) => item.file).slice(0, 80);
   entities.docs = uniqueBy(entities.docs, (item) => item.file).slice(0, 80);
@@ -879,23 +920,30 @@ function extractGoRoutes(text, base) {
   const lines = text.split("\n");
 
   lines.forEach((line, index) => {
-    const regex = /\.(Get|Post|Put|Patch|Delete|Head|Options)\(\s*["`]([^"`]+)["`]/g;
+    const regex = /\.(Get|Post|Put|Patch|Delete|Head|Options)\(\s*["`]([^"`]+)["`]\s*(?:,\s*([A-Za-z0-9_.$]+))?/g;
     for (const match of line.matchAll(regex)) {
       if (!isRouteLiteral(match[2])) continue;
       let routePath = normalizeRoutePath(match[2]);
       if (hasOrganizationsPrefix && routePath.startsWith("/{orgId}")) {
         routePath = `/api/organizations${routePath}`;
       }
+      const handlerName = cleanSymbol(match[3] ?? "");
       routes.push({
         ...base,
         kind: "api",
         source: "code",
         method: match[1].toUpperCase(),
         path: routePath,
+        handlerName,
         line: index + 1,
         title: `${match[1].toUpperCase()} ${routePath}`,
-        summary: "backend public/internal route",
+        summary: handlerName
+          ? `backend route -> ${handlerName}`
+          : "backend public/internal route",
         evidence: `${base.file}:${index + 1}`,
+        evidenceItems: [
+          evidenceItem(base.file, index + 1, line.trim(), "static", 0.86),
+        ],
       });
     }
   });
@@ -913,24 +961,23 @@ function extractPythonRoutes(text, base) {
     const inline = line.match(/@\w+\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']/i);
     if (inline) {
       if (!isRouteLiteral(inline[2])) return;
-      const routePath = normalizeRoutePath(inline[2]);
-      routes.push({
-        ...base,
-        kind: "engine",
-        source: "code",
+      pending = {
         method: inline[1].toUpperCase(),
-        path: routePath,
+        path: normalizeRoutePath(inline[2]),
         line: index + 1,
-        title: `${inline[1].toUpperCase()} ${routePath}`,
-        summary: "FastAPI endpoint",
-        evidence: `${base.file}:${index + 1}`,
-      });
+        source: line.trim(),
+      };
       return;
     }
 
     const start = line.match(/@\w+\.(get|post|put|patch|delete)\(\s*$/i);
     if (start) {
-      pending = { method: start[1].toUpperCase(), line: index + 1 };
+      pending = {
+        method: start[1].toUpperCase(),
+        path: "",
+        line: index + 1,
+        source: line.trim(),
+      };
       return;
     }
 
@@ -941,21 +988,34 @@ function extractPythonRoutes(text, base) {
           pending = null;
           return;
         }
-        const routePath = normalizeRoutePath(pathMatch[1]);
-        routes.push({
-          ...base,
-          kind: "engine",
-          source: "code",
-          method: pending.method,
-          path: routePath,
-          line: pending.line,
-          title: `${pending.method} ${routePath}`,
-          summary: "FastAPI endpoint",
-          evidence: `${base.file}:${pending.line}`,
-        });
-        pending = null;
+        pending.path = normalizeRoutePath(pathMatch[1]);
+        pending.source = `${pending.source} ${line.trim()}`.trim();
       }
+      if (!/^\s*\)/.test(line) && !/^\s*(?:async\s+)?def\s+/.test(line)) return;
     }
+
+    const functionMatch = line.match(/^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+    if (!pending || !pending.path || !functionMatch) return;
+
+    const handlerName = cleanSymbol(functionMatch[1]);
+    routes.push({
+      ...base,
+      kind: "engine",
+      source: "code",
+      method: pending.method,
+      path: pending.path,
+      handlerName,
+      line: pending.line,
+      handlerLine: index + 1,
+      title: `${pending.method} ${pending.path}`,
+      summary: `FastAPI endpoint -> ${handlerName}`,
+      evidence: `${base.file}:${pending.line}`,
+      evidenceItems: [
+        evidenceItem(base.file, pending.line, pending.source, "static", 0.9),
+        evidenceItem(base.file, index + 1, line.trim(), "static", 0.84),
+      ],
+    });
+    pending = null;
   });
 
   return routes;
@@ -995,6 +1055,9 @@ function extractOpenApiRoutes(text, base) {
       title: `${method} ${currentPath}`,
       summary: "Swagger/OpenAPI documented route",
       evidence: `${base.file}:${index + 1}`,
+      evidenceItems: [
+        evidenceItem(base.file, index + 1, line.trim(), "static", 0.78),
+      ],
       hasDocs: true,
     });
   });
@@ -1002,228 +1065,50 @@ function extractOpenApiRoutes(text, base) {
   return routes;
 }
 
-function buildEngineFlowEntities(repo, fileStatuses, teamSet, changeDetails) {
-  const definitions = [
-    {
-      group: "analysis",
-      step: 1,
-      slug: "start",
-      method: "POST",
-      path: "/analyze",
-      file: "services/engine/api/routes/analysis.py",
-      title: "분석 시작",
-      summary: "product API가 분석 요청을 넣고 callback 설정 여부를 판단",
-      evidence: "analysis request entrypoint",
-    },
-    {
-      group: "analysis",
-      step: 2,
-      slug: "dispatch",
-      method: "BRANCH",
-      path: "execute_analysis_job",
-      file: "services/engine/services/analysis_service.py",
-      title: "동기/비동기 분기",
-      summary: "callbackUrl이 있으면 background task로 넘기고 없으면 즉시 결과를 반환",
-      evidence: "execute_analysis_job",
-      transition: "callback 있으면 background task",
-    },
-    {
-      group: "analysis",
-      step: 3,
-      slug: "query-fetch",
-      method: "FETCH",
-      path: "fetch_query_range",
-      file: "services/engine/adapters/query_adapter.py",
-      title: "데이터 수집",
-      summary: "외부 metric/query provider에서 분석 대상 series를 가져옴",
-      evidence: "fetch_query_range",
-      transition: "query range 호출",
-    },
-    {
-      group: "analysis",
-      step: 4,
-      slug: "runtime-score",
-      method: "SCORE",
-      path: "score_runtime_model",
-      file: "services/engine/services/runtime_scoring.py",
-      title: "runtime score",
-      summary: "준비된 runtime model로 series별 점수를 계산",
-      evidence: "score_runtime_model",
-      transition: "series scoring",
-    },
-    {
-      group: "analysis",
-      step: 5,
-      slug: "overlay",
-      method: "MAP",
-      path: "result_to_overlay_events",
-      file: "services/engine/services/overlay_mapper.py",
-      title: "결과 오버레이 생성",
-      summary: "분석 결과를 UI overlay event payload로 변환",
-      evidence: "result_to_overlay_events",
-      transition: "analysis result -> overlay payload",
-    },
-    {
-      group: "analysis",
-      step: 6,
-      slug: "callback",
-      method: "POST",
-      path: "/api/analysis/callback",
-      file: "services/engine/services/callback_client.py",
-      title: "오버레이 콜백 전달",
-      summary: "product callback endpoint로 결과를 보내 UI 갱신을 끝냄",
-      evidence: "send_analysis_callback",
-      transition: "POST /api/analysis/callback",
-    },
-    {
-      group: "training",
-      step: 1,
-      slug: "start",
-      method: "POST",
-      path: "/train",
-      file: "services/engine/api/routes/training.py",
-      title: "학습 시작",
-      summary: "product API가 모델 학습 요청을 engine에 제출",
-      evidence: "train_model",
-    },
-    {
-      group: "training",
-      step: 2,
-      slug: "plan",
-      method: "PLAN",
-      path: "build_training_plan",
-      file: "services/engine/services/training_plan.py",
-      title: "실행 계획 생성",
-      summary: "source, label snapshot, collection window를 고정",
-      evidence: "build_training_plan",
-      transition: "collection plan 고정",
-    },
-    {
-      group: "training",
-      step: 3,
-      slug: "collect",
-      method: "COLLECT",
-      path: "collect_training_series",
-      file: "services/engine/services/training_collection.py",
-      title: "학습 데이터 수집",
-      summary: "계획된 source에서 training series를 구성",
-      evidence: "collect_training_series",
-      transition: "training series 수집",
-    },
-    {
-      group: "training",
-      step: 4,
-      slug: "features",
-      method: "BUILD",
-      path: "build_feature_matrix",
-      file: "services/engine/services/feature_builder.py",
-      title: "피처 matrix 생성",
-      summary: "training series를 model input matrix로 변환",
-      evidence: "build_feature_matrix",
-      transition: "feature matrix 구성",
-    },
-    {
-      group: "training",
-      step: 5,
-      slug: "fit",
-      method: "FIT",
-      path: "fit_model",
-      file: "services/engine/services/model_trainer.py",
-      title: "모델 생성",
-      summary: "scaler와 detector를 fit하고 model artifact를 생성",
-      evidence: "fit_model + write_artifact",
-      transition: "fit -> artifact 생성",
-    },
-    {
-      group: "training",
-      step: 6,
-      slug: "publish",
-      method: "PUBLISH",
-      path: "publish_artifact",
-      file: "services/engine/services/artifact_store.py",
-      title: "artifact publish",
-      summary: "metadata, checksum과 함께 모델 artifact를 저장하고 callback",
-      evidence: "publish_artifact + deliver_callback",
-      transition: "artifact 저장 후 callback 응답",
-    },
-    {
-      group: "error-code",
-      step: 1,
-      slug: "admission",
-      method: "ERR-001",
-      path: "admission",
-      file: "services/engine/services/error_codes.py",
-      title: "ERR-001 admission",
-      summary: "admission 단계에서 run을 거절하는 비재시도 실패 코드",
-      evidence: "EngineFailure(ERR-001, admission, reject_run)",
-      status: "risk",
-    },
-    {
-      group: "error-code",
-      step: 2,
-      slug: "query",
-      method: "ERR-201",
-      path: "query_request_failed",
-      file: "services/engine/services/error_codes.py",
-      title: "ERR-201 query",
-      summary: "query request 실패 계열 source 오류 코드",
-      evidence: "query_request_failed -> ERR-201",
-      status: "risk",
-    },
-    {
-      group: "error-code",
-      step: 3,
-      slug: "model-fit",
-      method: "ERR-401",
-      path: "model_fit",
-      file: "services/engine/services/error_codes.py",
-      title: "ERR-401 model fit",
-      summary: "model fit 단계 실패 코드",
-      evidence: "model_fit_failed -> ERR-401",
-      status: "risk",
-    },
-    {
-      group: "error-code",
-      step: 4,
-      slug: "artifact",
-      method: "ERR-502",
-      path: "artifact_publish",
-      file: "services/engine/services/error_codes.py",
-      title: "ERR-502 artifact publish",
-      summary: "artifact publish 실패, retry_then_fail",
-      evidence: "artifact_publish_failed -> ERR-502",
-      status: "risk",
-    },
-  ];
+function buildEngineFlowEntities(repo, codeFacts, endpoints) {
+  const endpointFacts = endpoints.map((endpoint) => ({
+    ...endpoint,
+    id: `engine-flow:endpoint:${hash(`${endpoint.file}:${endpoint.method}:${endpoint.path}`)}`,
+    kind: "engine",
+    symbol: endpoint.handlerName || endpoint.path,
+    confidence: 0.86,
+  }));
+  const candidates = uniqueBy(
+    [...endpointFacts, ...codeFacts.filter(isEngineFlowCandidate)],
+    (item) => item.id,
+  )
+    .map((item) => ({
+      ...item,
+      flowGroup: engineFlowGroup(item),
+      flowScore: engineFlowScore(item),
+    }))
+    .filter((item) => item.flowGroup);
 
-  return definitions
-    .map((definition) => {
-      const detectedStatus = fileStatuses[definition.file] ??
-        (teamSet.has(definition.file) ? "changed" : "stable");
-      const evidenceFile = existsSync(path.join(repo.path, definition.file))
-        ? definition.file
-        : `${repo.name} engine flow template`;
-      return {
-        id: `engine-flow:${definition.group}:${definition.step}-${definition.slug}`,
-        repo: repo.name,
-        repoType: repo.type,
-        file: definition.file,
-        kind: "engine",
-        method: definition.method,
-        path: definition.path,
-        title: `${definition.step}. ${definition.title}`,
-        summary: definition.summary,
-        evidence: `${evidenceFile} :: ${definition.evidence}`,
-        status: definition.status ?? detectedStatus,
-        flowGroup: definition.group,
-        flowStep: definition.step,
-        transition: definition.transition,
-        changes: {
-          current: changeDetails.current[definition.file],
-          team: changeDetails.team[definition.file],
-        },
-      };
-    });
+  const grouped = new Map();
+  for (const item of candidates) {
+    const group = grouped.get(item.flowGroup) ?? [];
+    group.push(item);
+    grouped.set(item.flowGroup, group);
+  }
+
+  return [...grouped.entries()].flatMap(([group, items]) =>
+    items
+      .sort((left, right) => right.flowScore - left.flowScore || lineNumber(left) - lineNumber(right))
+      .slice(0, group === "error-code" ? 10 : 8)
+      .map((item, index) => ({
+        ...item,
+        id: `engine-flow:${group}:${index + 1}-${hash(item.id).slice(0, 6)}`,
+        kind: item.kind === "error" ? "error" : "engine",
+        title: `${index + 1}. ${item.title}`,
+        summary: item.summary,
+        evidence: item.evidence,
+        flowGroup: group,
+        flowStep: index + 1,
+        transition: engineTransition(item, group),
+        status: item.kind === "error" ? "risk" : item.status,
+        confidence: item.confidence ?? 0.68,
+      })),
+  );
 }
 
 function extractFrontendApiCalls(text, base) {
@@ -1231,8 +1116,10 @@ function extractFrontendApiCalls(text, base) {
 
   const wrappers = [];
   const lines = text.split("\n");
+  let currentFunction = "";
 
   lines.forEach((line, index) => {
+    currentFunction = detectJsFunctionName(line) || currentFunction;
     const pathRegex = /[`'"]([^`'"]*\/api\/[^`'"]*)[`'"]/g;
     for (const match of line.matchAll(pathRegex)) {
       const apiPath = normalizeRoutePath(match[1]);
@@ -1246,15 +1133,453 @@ function extractFrontendApiCalls(text, base) {
         kind: "wrapper",
         method,
         path: apiPath,
+        callerName: currentFunction,
         line: index + 1,
-        title: `${method} ${apiPath}`,
-        summary: "frontend API wrapper/callsite",
+        title: currentFunction ? `${currentFunction} -> ${apiPath}` : `${method} ${apiPath}`,
+        summary: currentFunction
+          ? `frontend callsite in ${currentFunction}`
+          : "frontend API wrapper/callsite",
         evidence: `${base.file}:${index + 1}`,
+        evidenceItems: [
+          evidenceItem(base.file, index + 1, line.trim(), "static", 0.82),
+        ],
       });
     }
   });
 
   return wrappers;
+}
+
+function extractCodeTopology(repo, files, routeEntities) {
+  const facts = new Map();
+  const callRefs = [];
+  const edges = [];
+
+  for (const fileItem of files) {
+    const extracted = extractFileCodeFacts(fileItem);
+    extracted.facts.forEach((fact) => addFact(facts, fact));
+    callRefs.push(...extracted.callRefs);
+  }
+
+  const symbolIndex = buildSymbolIndex([...facts.values()]);
+
+  for (const route of routeEntities) {
+    const handlerName = cleanSymbol(route.handlerName ?? "");
+    if (!handlerName) continue;
+
+    const handlerFact =
+      findFactBySymbol(symbolIndex, handlerName, route.file) ??
+      addFact(facts, syntheticHandlerFact(repo, route, handlerName));
+
+    handlerFact.kind = "handler";
+    handlerFact.summary = `API handler for ${route.method} ${route.path}`;
+    handlerFact.confidence = Math.max(handlerFact.confidence ?? 0, 0.88);
+
+    edges.push(
+      codeEdge(
+        entityId(route),
+        handlerFact.id,
+        "handled by",
+        route.status,
+        route.evidenceItems ?? [
+          evidenceItem(route.file, route.line, route.evidence, "static", 0.84),
+        ],
+        0.88,
+        "handles",
+      ),
+    );
+  }
+
+  for (const ref of callRefs) {
+    const source = findFactBySymbol(symbolIndex, ref.callerSymbol, ref.file);
+    const target = ref.targetId
+      ? facts.get(ref.targetId)
+      : findFactBySymbol(symbolIndex, ref.targetSymbol, ref.file);
+    if (!source || !target || source.id === target.id) continue;
+
+    edges.push(
+      codeEdge(
+        source.id,
+        target.id,
+        ref.label,
+        strongestStatus(source.status, target.status),
+        ref.evidenceItems,
+        ref.confidence,
+        ref.kind,
+      ),
+    );
+  }
+
+  return {
+    facts: [...facts.values()],
+    edges: uniqueBy(edges, (item) => item.id),
+  };
+}
+
+function extractFileCodeFacts({ file, text, base }) {
+  if (!/\.(go|py|tsx?|jsx?)$/.test(file)) {
+    return { facts: [], callRefs: [] };
+  }
+
+  const facts = [];
+  const callRefs = [];
+  let currentFunction = "";
+
+  text.split("\n").forEach((line, index) => {
+    const lineNo = index + 1;
+    const functionName = detectFunctionName(line, file);
+    if (functionName) {
+      currentFunction = cleanSymbol(functionName);
+      facts.push(
+        codeFact(base, {
+          kind: codeFunctionKind(file, base.repoType),
+          title: currentFunction,
+          symbol: currentFunction,
+          line: lineNo,
+          path: `${file}#${currentFunction}`,
+          summary: "코드 실행 지점",
+          evidenceText: line.trim(),
+          confidence: 0.74,
+        }),
+      );
+    }
+
+    const errorCodes = extractErrorCodes(line);
+    for (const errorCode of errorCodes) {
+      const fact = codeFact(base, {
+        kind: "error",
+        title: errorCode,
+        symbol: errorCode,
+        line: lineNo,
+        path: `${file}#${errorCode}`,
+        summary: "코드에서 선언 또는 사용된 에러 코드",
+        evidenceText: line.trim(),
+        confidence: 0.82,
+        status: base.status === "stable" ? "risk" : base.status,
+      });
+      facts.push(fact);
+      if (currentFunction) {
+        callRefs.push(
+          codeRef(currentFunction, fact.id, file, lineNo, "raises", "error", line.trim(), 0.76),
+        );
+      }
+    }
+
+    for (const target of extractExternalTargets(line)) {
+      const fact = codeFact(base, {
+        kind: "external",
+        title: target,
+        symbol: target,
+        line: lineNo,
+        path: target,
+        summary: "외부 HTTP/API 호출 지점",
+        evidenceText: line.trim(),
+        confidence: 0.72,
+      });
+      facts.push(fact);
+      if (currentFunction) {
+        callRefs.push(
+          codeRef(currentFunction, fact.id, file, lineNo, "requests", "external", line.trim(), 0.72),
+        );
+      }
+    }
+
+    if (isDbUsage(line, file)) {
+      const fact = codeFact(base, {
+        kind: "db",
+        title: "DB access",
+        symbol: `db:${file}`,
+        line: lineNo,
+        path: `${file}#db`,
+        summary: "DB query/read/write 호출 지점",
+        evidenceText: line.trim(),
+        confidence: 0.7,
+      });
+      facts.push(fact);
+      if (currentFunction) {
+        callRefs.push(
+          codeRef(currentFunction, fact.id, file, lineNo, "reads/writes", "db", line.trim(), 0.7),
+        );
+      }
+    }
+
+    if (!currentFunction) return;
+
+    for (const targetSymbol of extractCallSymbols(line, file)) {
+      const cleanTarget = cleanSymbol(targetSymbol);
+      if (!cleanTarget || cleanTarget === currentFunction) continue;
+      callRefs.push(
+        codeRef(currentFunction, cleanTarget, file, lineNo, "calls", "calls", line.trim(), 0.58),
+      );
+    }
+  });
+
+  return { facts, callRefs };
+}
+
+function codeFact(base, options) {
+  const line = Number(options.line ?? 0);
+  const id = `code:${base.repo}:${hash(`${base.file}:${options.kind}:${options.symbol}:${line}`)}`;
+
+  return {
+    id,
+    repo: base.repo,
+    repoType: base.repoType,
+    file: base.file,
+    kind: options.kind,
+    status: options.status ?? base.status,
+    symbol: options.symbol,
+    path: options.path ?? `${base.file}:${line}`,
+    line,
+    title: options.title,
+    summary: options.summary,
+    evidence: `${base.file}:${line}`,
+    evidenceItems: [
+      evidenceItem(base.file, line, options.evidenceText, "static", options.confidence),
+    ],
+    confidence: options.confidence,
+    changes: base.changes,
+  };
+}
+
+function syntheticHandlerFact(repo, route, handlerName) {
+  return {
+    id: `code:${repo.name}:${hash(`${route.file}:handler:${handlerName}:${route.line}`)}`,
+    repo: repo.name,
+    repoType: repo.type,
+    file: route.file,
+    kind: "handler",
+    status: route.status,
+    symbol: handlerName,
+    path: `${route.file}#${handlerName}`,
+    line: route.handlerLine ?? route.line,
+    title: handlerName,
+    summary: `API handler for ${route.method} ${route.path}`,
+    evidence: `${route.file}:${route.handlerLine ?? route.line}`,
+    evidenceItems: route.evidenceItems ?? [
+      evidenceItem(route.file, route.line, route.evidence, "static", 0.74),
+    ],
+    confidence: 0.68,
+    changes: route.changes,
+  };
+}
+
+function codeRef(callerSymbol, target, file, line, label, kind, text, confidence) {
+  const targetId = String(target).startsWith("code:") ? target : "";
+  const targetSymbol = targetId ? "" : target;
+
+  return {
+    callerSymbol,
+    targetId,
+    targetSymbol,
+    file,
+    label,
+    kind,
+    evidenceItems: [evidenceItem(file, line, text, "static", confidence)],
+    confidence,
+  };
+}
+
+function codeEdge(source, target, label, status, evidenceItems, confidence, kind) {
+  const evidence = evidenceItems?.[0];
+  return {
+    id: `code-edge:${source}->${target}:${label}:${hash(`${evidence?.file ?? ""}:${evidence?.line ?? ""}:${label}`)}`,
+    source,
+    target,
+    label,
+    status,
+    kind,
+    confidence,
+    evidence: evidence ? `${evidence.file}:${evidence.line}` : "",
+    evidenceItems: evidenceItems ?? [],
+  };
+}
+
+function addFact(facts, fact) {
+  const existing = facts.get(fact.id);
+  if (!existing) {
+    facts.set(fact.id, fact);
+    return fact;
+  }
+
+  existing.status = strongestStatus(existing.status, fact.status);
+  existing.confidence = Math.max(existing.confidence ?? 0, fact.confidence ?? 0);
+  existing.evidenceItems = uniqueBy(
+    [...(existing.evidenceItems ?? []), ...(fact.evidenceItems ?? [])],
+    (item) => `${item.file}:${item.line}:${item.text}`,
+  ).slice(0, 6);
+  return existing;
+}
+
+function buildSymbolIndex(facts) {
+  const index = new Map();
+
+  for (const fact of facts) {
+    if (!fact.symbol) continue;
+    const key = cleanSymbol(fact.symbol).toLowerCase();
+    const values = index.get(key) ?? [];
+    values.push(fact);
+    index.set(key, values);
+  }
+
+  return index;
+}
+
+function findFactBySymbol(index, symbol, preferredFile) {
+  const values = index.get(cleanSymbol(symbol).toLowerCase()) ?? [];
+  return values.find((item) => item.file === preferredFile) ?? values[0] ?? null;
+}
+
+function detectFunctionName(line, file) {
+  if (/\.py$/.test(file)) {
+    return line.match(/^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1] ?? "";
+  }
+
+  if (/\.go$/.test(file)) {
+    return (
+      line.match(/^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1] ??
+      ""
+    );
+  }
+
+  return detectJsFunctionName(line);
+}
+
+function detectJsFunctionName(line) {
+  return (
+    line.match(/(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/)?.[1] ??
+    line.match(/(?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(?/)?.[1] ??
+    line.match(/^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*[:=]\s*(?:async\s*)?\([^)]*\)\s*=>/)?.[1] ??
+    line.match(/^\s*class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/)?.[1] ??
+    ""
+  );
+}
+
+function extractCallSymbols(line, file) {
+  const calls = [];
+  const regex = /\.?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  for (const match of line.matchAll(regex)) {
+    const symbol = cleanSymbol(match[1]);
+    if (!symbol || ignoredCallSymbols.has(symbol)) continue;
+    if (/\.py$/.test(file) && symbol === "def") continue;
+    if (/\.go$/.test(file) && symbol === "func") continue;
+    calls.push(symbol);
+  }
+  return unique(calls).slice(0, 12);
+}
+
+function extractExternalTargets(line) {
+  const urls = [];
+  const regex = /["'`](https?:\/\/[^"'`\s)]+)["'`]/g;
+  for (const match of line.matchAll(regex)) {
+    urls.push(match[1].replace(/\?.*$/, ""));
+  }
+  return unique(urls).slice(0, 4);
+}
+
+function extractErrorCodes(line) {
+  const codes = [];
+  const regex = /\b(?:ERR[-_]\d{2,5}|SNT[A-Z0-9_-]{2,}|[A-Z]{2,8}[-_]\d{2,5})\b/g;
+  for (const match of line.matchAll(regex)) {
+    codes.push(match[0].replace("_", "-"));
+  }
+  return unique(codes).slice(0, 8);
+}
+
+function isDbUsage(line, file) {
+  if (isDbFile(file)) return true;
+  return /\b(db|database|sql|postgres|mysql|sqlite|mongo|redis|prisma|drizzle|gorm|typeorm|sequelize)\b/i.test(line) ||
+    /\.(Query|QueryRow|Exec|Find|FindOne|Insert|Update|Delete|Create|Save)(Context)?\s*\(/.test(line);
+}
+
+function codeFunctionKind(file, repoType) {
+  if (isUiFile(file)) return "ui";
+  if (repoType === "engine" || /\.py$/.test(file)) return "engine";
+  if (/api|route|handler|server|controller/i.test(file)) return "handler";
+  return "function";
+}
+
+function evidenceItem(file, line, text, source, confidence) {
+  return {
+    file,
+    line: Number(line) || 0,
+    text: trimEvidenceText(text ?? ""),
+    source,
+    confidence: Number(confidence.toFixed(2)),
+  };
+}
+
+function trimEvidenceText(text) {
+  const normalized = String(text).replace(/\s+/g, " ").trim();
+  return normalized.length <= 180 ? normalized : `${normalized.slice(0, 177)}...`;
+}
+
+function cleanSymbol(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/^[*.]+/, "")
+    .split(".")
+    .at(-1)
+    ?.replace(/[^A-Za-z0-9_$-]/g, "") ?? "";
+}
+
+function strongestStatus(left, right) {
+  const score = { risk: 4, active: 3, added: 2, changed: 2, stable: 1 };
+  return (score[left] ?? 0) >= (score[right] ?? 0) ? left : right;
+}
+
+function lineNumber(item) {
+  return Number(item.line ?? item.flowStep ?? 0);
+}
+
+function isEngineFlowCandidate(item) {
+  if (item.kind === "error") return true;
+  if (item.kind === "external" || item.kind === "db") return false;
+  return /engine|analysis|analy[sz]e|score|overlay|callback|train|retrain|fit|model|artifact|feature|dataset|collect|predict|detect/i.test(
+    `${item.repoType} ${item.file} ${item.title} ${item.symbol ?? ""} ${item.path ?? ""}`,
+  );
+}
+
+function engineFlowGroup(item) {
+  const target = `${item.file} ${item.title} ${item.symbol ?? ""} ${item.path ?? ""}`.toLowerCase();
+  if (item.kind === "error" || /err[-_]\d|snt|error|failure|exception/.test(target)) {
+    return "error-code";
+  }
+  if (/train|retrain|fit|model|artifact|feature|dataset|collect|label/.test(target)) {
+    return "training";
+  }
+  if (/analysis|analyze|analyse|score|overlay|callback|predict|detect|incident|anomaly/.test(target)) {
+    return "analysis";
+  }
+  return "";
+}
+
+function engineFlowScore(item) {
+  const target = `${item.file} ${item.title} ${item.symbol ?? ""} ${item.path ?? ""}`.toLowerCase();
+  const order = [
+    [/\/|route|endpoint|start|request|create|bootstrap/, 120],
+    [/plan|validate|admission|config/, 104],
+    [/collect|fetch|load|query|dataset|source/, 92],
+    [/feature|transform|matrix|prepare/, 80],
+    [/score|predict|detect|fit|train/, 68],
+    [/overlay|artifact|publish|save|store|callback|result/, 56],
+    [/error|failure|exception|err[-_]\d|snt/, 44],
+  ];
+  const matched = order.find(([pattern]) => pattern.test(target))?.[1] ?? 20;
+  const statusBoost = item.status === "stable" ? 0 : 12;
+  return matched + statusBoost + Math.round((item.confidence ?? 0.5) * 10);
+}
+
+function engineTransition(item, group) {
+  const target = `${item.title} ${item.symbol ?? ""} ${item.path ?? ""}`.toLowerCase();
+  if (group === "error-code") return "error branch";
+  if (/route|endpoint|request|start|create|bootstrap/.test(target)) return "request";
+  if (/plan|validate|admission|config/.test(target)) return "validate";
+  if (/collect|fetch|load|query|dataset|source/.test(target)) return "collect";
+  if (/feature|transform|matrix|prepare/.test(target)) return "feature";
+  if (/score|predict|detect|fit|train/.test(target)) return group === "training" ? "fit" : "score";
+  if (/overlay|artifact|publish|save|store|callback|result/.test(target)) return "publish/result";
+  return group === "training" ? "training flow" : "analysis flow";
 }
 
 function normalizeRoutePath(value) {
@@ -1328,6 +1653,7 @@ function buildSnapshot(repos, previousSnapshot) {
       routeCount: repo.entities.routes.length,
       wrapperCount: repo.entities.wrappers.length,
       engineEndpointCount: repo.entities.engineEndpoints.length,
+      codeFactCount: repo.entities.codeFacts.length,
       warnings: repo.warnings,
     })),
     warnings: repos.flatMap((repo) =>
@@ -1688,10 +2014,17 @@ function buildScenario(id, label, description, repos) {
     mode,
     isEngineFlow ? 0 : 5,
   );
+  const codeFacts = selectEntities(
+    repos.flatMap((repo) => repo.entities.codeFacts),
+    contextTokens,
+    mode,
+    isEngineFlow ? 0 : 18,
+  );
+  const codeEdges = repos.flatMap((repo) => repo.entities.codeEdges);
 
   const selectedEntities = isEngineFlow
     ? [...engineFlows, ...endpoints]
-    : [...wrappers, ...routes, ...endpoints, ...docs, ...tests, ...dbFiles];
+    : [...wrappers, ...routes, ...endpoints, ...codeFacts, ...docs, ...tests, ...dbFiles];
   const featureChanges = buildFeatureChanges(selectedFiles, selectedEntities, mode);
 
   for (const item of selectedEntities) {
@@ -1715,6 +2048,8 @@ function buildScenario(id, label, description, repos) {
       badgesForEntity(item, status),
       undefined,
       changeForMode(item, mode),
+      item.evidenceItems,
+      item.confidence,
     ));
     if (status !== "stable") {
       edges.push(edge(`repo:${item.repo}`, itemId, "owns", status));
@@ -1723,6 +2058,7 @@ function buildScenario(id, label, description, repos) {
 
   connectByFile(nodes, edges);
   connectApiFlow(wrappers, routes, endpoints, edges);
+  connectStaticCodeEdges(selectedEntities, codeEdges, edges);
   connectEngineFlows(engineFlows, edges);
   connectContracts(routes, docs, tests, edges);
   connectData(routes, dbFiles, edges);
@@ -2040,6 +2376,10 @@ function kindLabel(kind) {
     wrapper: "프론트 API",
     api: "백엔드 API",
     engine: "엔진 API",
+    handler: "처리 함수",
+    function: "함수",
+    external: "외부 API",
+    error: "에러 코드",
     db: "DB",
     docs: "문서",
     test: "테스트",
@@ -2135,7 +2475,7 @@ function classifyFileKind(file, repoType) {
   return "repo";
 }
 
-function node(id, title, repo, filePath, kind, status, column, order, impact, summary, evidence, badges, metrics, change) {
+function node(id, title, repo, filePath, kind, status, column, order, impact, summary, evidence, badges, metrics, change, evidenceItems, confidence) {
   return {
     id,
     type: "entity",
@@ -2152,17 +2492,19 @@ function node(id, title, repo, filePath, kind, status, column, order, impact, su
       badges,
       metrics,
       change,
+      evidenceItems,
+      confidence,
     },
   };
 }
 
-function edge(source, target, label, status) {
+function edge(source, target, label, status, metadata = {}) {
   return {
     id: `${source}->${target}:${label}`,
     source,
     target,
     label,
-    data: { status },
+    data: { ...metadata, status },
   };
 }
 
@@ -2249,6 +2591,7 @@ function nodeStage(item) {
   if (flowStage) return `flow-${flowStage[1]}`;
   if (item.data.kind === "ui" || item.data.kind === "wrapper") return "surface";
   if (item.data.kind === "api") return "api";
+  if (item.data.kind === "handler" || item.data.kind === "function") return "downstream";
   return "downstream";
 }
 
@@ -2265,8 +2608,12 @@ function kindColumn(kind) {
     ui: 1,
     wrapper: 1,
     api: 2,
+    handler: 3,
+    function: 3,
     docs: 2,
     engine: 3,
+    external: 4,
+    error: 4,
     db: 3,
     test: 3,
   }[kind] ?? 1;
@@ -2301,8 +2648,12 @@ function graphNodeScore(item) {
   }[item.data.status] ?? 0;
   const kindScore = {
     api: 20,
+    handler: 19,
+    function: 15,
     wrapper: 18,
     engine: 18,
+    external: 13,
+    error: 24,
     ui: 16,
     test: 12,
     docs: 10,
@@ -2329,6 +2680,7 @@ function badgesForEntity(item, status) {
   if (item.method) badges.push(item.method);
   if (item.hasDocs === false) badges.push("docs?");
   if (item.hasTests === false) badges.push("test?");
+  if (typeof item.confidence === "number") badges.push(`conf ${Math.round(item.confidence * 100)}%`);
   return badges;
 }
 
@@ -2371,9 +2723,33 @@ function connectApiFlow(wrappers, routes, endpoints, edges) {
   }
 }
 
+function connectStaticCodeEdges(selectedEntities, codeEdges, edges) {
+  const selectedIds = new Set(selectedEntities.map(entityId));
+
+  for (const codeEdgeItem of codeEdges) {
+    if (!selectedIds.has(codeEdgeItem.source) || !selectedIds.has(codeEdgeItem.target)) {
+      continue;
+    }
+
+    edges.push(
+      edge(
+        codeEdgeItem.source,
+        codeEdgeItem.target,
+        codeEdgeItem.label,
+        codeEdgeItem.status,
+        {
+          kind: codeEdgeItem.kind,
+          confidence: codeEdgeItem.confidence,
+          evidence: codeEdgeItem.evidence,
+          evidenceItems: codeEdgeItem.evidenceItems,
+        },
+      ),
+    );
+  }
+}
+
 function connectEngineFlows(engineFlows, edges) {
   const byGroup = new Map();
-  const byFlowId = new Map(engineFlows.map((item) => [item.id, item]));
 
   for (const item of engineFlows) {
     const group = byGroup.get(item.flowGroup) ?? [];
@@ -2399,34 +2775,6 @@ function connectEngineFlows(engineFlows, edges) {
         ),
       );
     }
-  }
-
-  const branches = [
-    [
-      "engine-flow:training:1-start",
-      "engine-flow:error-code:1-admission",
-      "admission reject -> ERR-001",
-    ],
-    [
-      "engine-flow:analysis:3-query-fetch",
-      "engine-flow:error-code:2-query",
-      "query_request_failed -> ERR-201",
-    ],
-    [
-      "engine-flow:training:5-fit",
-      "engine-flow:error-code:3-model-fit",
-      "model fit failure -> ERR-401",
-    ],
-    [
-      "engine-flow:training:6-publish",
-      "engine-flow:error-code:4-artifact",
-      "artifact publish failed -> ERR-502",
-    ],
-  ];
-
-  for (const [source, target, label] of branches) {
-    if (!byFlowId.has(source) || !byFlowId.has(target)) continue;
-    edges.push(edge(source, target, label, "risk"));
   }
 }
 

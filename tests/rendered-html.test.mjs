@@ -79,6 +79,8 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(client, /PR 변경/);
   assert.match(client, /compactTeamGraphNodes/);
   assert.match(client, /buildTeamUpdateEvents/);
+  assert.match(client, /EvidenceList/);
+  assert.match(client, /EdgeSummary/);
   assert.doesNotMatch(client, /repo-main/);
   assert.doesNotMatch(client, /team-pr-chip/);
   assert.match(packageJson, /"name": "where-am-i"/);
@@ -88,6 +90,9 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(scanServer, /watchDebounceMs/);
   assert.match(scanServer, /watch\(/);
   assert.match(scanRepos, /extractOpenApiRoutes/);
+  assert.match(scanRepos, /extractCodeTopology/);
+  assert.match(scanRepos, /codeFacts/);
+  assert.match(scanRepos, /evidenceItems/);
   assert.match(scanRepos, /apiNodesPerScenario/);
   assert.match(scanRepos, /isApiCatalogFile/);
   assert.match(scanRepos, /repoRoots:\s*\[\]/);
