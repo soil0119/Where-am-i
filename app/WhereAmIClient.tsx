@@ -147,7 +147,7 @@ type EntityNodeData = Record<string, unknown> & {
   change?: ChangeDetail;
 };
 
-type EntityNode = Node<EntityNodeData, "entity" | "repoGroup">;
+type EntityNode = Node<EntityNodeData, "entity">;
 
 type BriefingItem = {
   type: "추가" | "변경" | "주의" | "정상";
@@ -230,7 +230,7 @@ const LOCAL_SCAN_URL = "http://localhost:3010/scan";
 const LOCAL_SCAN_EVENTS_URL = "http://localhost:3010/events";
 const LEFT_PANEL_MIN_WIDTH = 220;
 const LEFT_PANEL_MAX_WIDTH = 460;
-const DETAIL_PANEL_MIN_HEIGHT = 300;
+const DETAIL_PANEL_MIN_HEIGHT = 260;
 const DETAIL_PANEL_MAX_HEIGHT = 780;
 const RESIZE_OBSERVER_LOOP_MESSAGES = new Set([
   "ResizeObserver loop completed with undelivered notifications.",
@@ -926,52 +926,73 @@ function teamUpdateFileKey(repoName: string, file: string) {
   return `${repoName}/${file}`;
 }
 
+function normalizeCodeFilePath(filePath: string) {
+  return filePath
+    .split("#")[0]
+    .replace(/:\d+(?::\d+)?$/, "")
+    .trim();
+}
+
+function matchesTeamUpdateFile(node: EntityNode, fileSet: Set<string>) {
+  if (fileSet.size === 0) return false;
+
+  const candidatePaths = [
+    node.data.path,
+    ...(node.data.evidenceItems ?? []).map((item) => item.file),
+  ];
+
+  return candidatePaths.some((filePath) => {
+    const normalized = normalizeCodeFilePath(filePath);
+    return (
+      normalized.length > 0 &&
+      fileSet.has(teamUpdateFileKey(node.data.repo, normalized))
+    );
+  });
+}
+
 function buildTeamUpdateEvents(
   repos: RepoSummary[],
-  selectedRepoNames: string[],
-  selectedUpdate: SelectedTeamUpdate | null,
   fallback?: ScanDelta,
+  selectedRepoName?: string | null,
+  prQuery = "",
 ): ScanDelta | undefined {
-  const fallbackEvents = fallback?.events ?? [];
-  const shouldUseLatestPrs =
-    selectedRepoNames.length === 0 &&
-    !selectedUpdate &&
-    fallbackEvents.length === 0;
-
-  if (selectedRepoNames.length === 0 && !selectedUpdate && !shouldUseLatestPrs) {
-    return fallback;
-  }
-
-  const selectedSet = new Set(
-    selectedRepoNames.length > 0
-      ? selectedRepoNames
-      : selectedUpdate
-        ? [selectedUpdate.repo.name]
-        : [],
-  );
-  const events = repos
-    .filter((repo) =>
-      selectedSet.size === 0 || selectedSet.has(repo.name),
-    )
+  const normalizedPrQuery = prQuery.replace(/^#/, "").trim();
+  const latestPrEvents = repos
+    .filter((repo) => !selectedRepoName || repo.name === selectedRepoName)
     .flatMap((repo) =>
       (repo.teamUpdates ?? [])
         .filter((update) => Boolean(update.prNumber))
         .map((update) => teamUpdateEvent(repo, update)),
     )
+    .filter(
+      (event) =>
+        normalizedPrQuery.length === 0 ||
+        String(event.title).includes(`#${normalizedPrQuery}`) ||
+        event.updateKey?.endsWith(`:${normalizedPrQuery}`),
+    )
     .sort((left, right) => Date.parse(right.at) - Date.parse(left.at))
-    .slice(0, shouldUseLatestPrs ? 5 : undefined);
+    .slice(0, 5);
+
+  if (
+    latestPrEvents.length === 0 &&
+    !selectedRepoName &&
+    normalizedPrQuery.length === 0
+  ) {
+    return fallback;
+  }
+
+  const summary = normalizedPrQuery
+    ? `PR #${normalizedPrQuery} ${latestPrEvents.length}`
+    : selectedRepoName
+      ? `${compactRepoName(selectedRepoName)} PR ${latestPrEvents.length}`
+      : `최근 PR ${latestPrEvents.length}`;
 
   return {
     from: fallback?.from ?? null,
     to: fallback?.to ?? new Date().toISOString(),
-    hasChanges: events.length > 0,
-    summary:
-      events.length > 0
-        ? shouldUseLatestPrs
-          ? `최근 PR ${events.length}`
-          : `PR ${events.length}`
-        : "PR 없음",
-    events,
+    hasChanges: latestPrEvents.length > 0,
+    summary,
+    events: latestPrEvents,
   };
 }
 
@@ -1020,10 +1041,12 @@ function compactTeamGraphNodes(nodes: EntityNode[]) {
   });
 }
 
-const FLOW_COLUMN_WIDTH = 450;
-const FLOW_NODE_STEP_Y = 204;
-const FLOW_GROUP_HEADER_HEIGHT = 68;
-const FLOW_GROUP_GAP = 44;
+const FLOW_COLUMN_GAP = 126;
+const FLOW_LANE_STEP_X = 356;
+const FLOW_NODE_STEP_Y = 188;
+const FLOW_STAGE_ROWS = 4;
+const FLOW_START_X = 70;
+const FLOW_START_Y = 64;
 
 function flowColumn(node: EntityNode) {
   const engineFlowStep = node.id.match(/^engine-flow:[^:]+:(\d+)-/);
@@ -1054,10 +1077,6 @@ function flowNodeOrder(node: EntityNode) {
   return node.data.title.localeCompare(node.data.title);
 }
 
-function repoGroupId(repo: string) {
-  return `repo-group:${encodeURIComponent(repo)}`;
-}
-
 function layoutApiFlowGraph(nodes: EntityNode[], edges: Edge[]) {
   const contentNodes = nodes.filter((node) => node.data.kind !== "repo");
   const visibleIds = new Set(contentNodes.map((node) => node.id));
@@ -1074,82 +1093,49 @@ function layoutApiFlowGraph(nodes: EntityNode[], edges: Edge[]) {
   }
 
   const maxColumn = Math.max(4, ...contentNodes.map(flowColumn));
-  const groupWidth = (maxColumn + 1) * FLOW_COLUMN_WIDTH + 88;
-  const byRepo = new Map<string, EntityNode[]>();
+  const byColumn = new Map<number, EntityNode[]>();
+  const positionedNodes: EntityNode[] = [];
+  let columnX = FLOW_START_X;
 
   contentNodes.forEach((node) => {
-    const repoNodes = byRepo.get(node.data.repo) ?? [];
-    repoNodes.push(node);
-    byRepo.set(node.data.repo, repoNodes);
+    const column = flowColumn(node);
+    const columnNodes = byColumn.get(column) ?? [];
+    columnNodes.push(node);
+    byColumn.set(column, columnNodes);
   });
 
-  const groupNodes: EntityNode[] = [];
-  const positionedNodes: EntityNode[] = [];
-  let groupY = 40;
+  Array.from({ length: maxColumn + 1 }, (_, column) => column).forEach((column) => {
+    const columnNodes = byColumn.get(column) ?? [];
+    if (columnNodes.length === 0) {
+      columnX += FLOW_LANE_STEP_X + FLOW_COLUMN_GAP;
+      return;
+    }
 
-  [...byRepo.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .forEach(([repo, repoNodes]) => {
-      const byColumn = new Map<number, EntityNode[]>();
-      repoNodes.forEach((node) => {
-        const columnNodes = byColumn.get(flowColumn(node)) ?? [];
-        columnNodes.push(node);
-        byColumn.set(flowColumn(node), columnNodes);
+    const lanes = Math.max(1, Math.ceil(columnNodes.length / FLOW_STAGE_ROWS));
+    columnNodes
+      .sort(
+        (left, right) =>
+          flowNodeOrder(left) - flowNodeOrder(right) ||
+          left.data.repo.localeCompare(right.data.repo),
+      )
+      .forEach((node, index) => {
+        const lane = Math.floor(index / FLOW_STAGE_ROWS);
+        const row = index % FLOW_STAGE_ROWS;
+        positionedNodes.push({
+          ...node,
+          position: {
+            x: columnX + lane * FLOW_LANE_STEP_X,
+            y: FLOW_START_Y + row * FLOW_NODE_STEP_Y,
+          },
+          zIndex: 2,
+        });
       });
 
-      const maxRows = Math.max(1, ...[...byColumn.values()].map((items) => items.length));
-      const groupHeight =
-        FLOW_GROUP_HEADER_HEIGHT + maxRows * FLOW_NODE_STEP_Y + 26;
-      const groupId = repoGroupId(repo);
-
-      groupNodes.push({
-        id: groupId,
-        type: "repoGroup",
-        position: { x: 40, y: groupY },
-        selectable: false,
-        draggable: false,
-        connectable: false,
-        data: {
-          title: repo,
-          repo,
-          path: "",
-          kind: "repo",
-          status: "stable",
-          impact: "repo boundary",
-          summary: "API flow boundary",
-          evidence: "",
-          badges: [],
-        },
-        style: {
-          height: groupHeight,
-          width: groupWidth,
-          zIndex: -1,
-        },
-      });
-
-      [...byColumn.entries()].forEach(([column, columnNodes]) => {
-        columnNodes
-          .sort((left, right) => flowNodeOrder(left) - flowNodeOrder(right))
-          .forEach((node, row) => {
-            positionedNodes.push({
-              ...node,
-              parentId: groupId,
-              extent: "parent",
-              expandParent: false,
-              position: {
-                x: 44 + column * FLOW_COLUMN_WIDTH,
-                y: FLOW_GROUP_HEADER_HEIGHT + row * FLOW_NODE_STEP_Y,
-              },
-              zIndex: 2,
-            });
-          });
-      });
-
-      groupY += groupHeight + FLOW_GROUP_GAP;
-    });
+    columnX += lanes * FLOW_LANE_STEP_X + FLOW_COLUMN_GAP;
+  });
 
   return {
-    nodes: [...groupNodes, ...positionedNodes],
+    nodes: positionedNodes,
     edges: flowEdges,
   };
 }
@@ -1229,21 +1215,8 @@ function EntityNodeCard({ data, selected }: NodeProps<EntityNode>) {
   );
 }
 
-function RepoGroupCard({ data }: NodeProps<EntityNode>) {
-  return (
-    <section className="repo-flow-group">
-      <div>
-        <Boxes size={15} aria-hidden="true" />
-        <strong>{data.title}</strong>
-      </div>
-      <span>repo boundary</span>
-    </section>
-  );
-}
-
 const nodeTypes: NodeTypes = {
   entity: EntityNodeCard,
-  repoGroup: RepoGroupCard,
 };
 
 function ChangeSummary({ change }: { change?: ChangeDetail }) {
@@ -1385,6 +1358,87 @@ function EdgeSummary({ edge }: { edge: Edge }) {
   );
 }
 
+function StructureOverview({
+  scenarioLabel,
+  repoCount,
+  selectedRepoCount,
+  featureCount,
+  changedCount,
+  riskCount,
+  edgeCount,
+  focusLabel,
+  evidenceCount,
+}: {
+  scenarioLabel: string;
+  repoCount: number;
+  selectedRepoCount: number;
+  featureCount: number;
+  changedCount: number;
+  riskCount: number;
+  edgeCount: number;
+  focusLabel: string;
+  evidenceCount: number;
+}) {
+  const steps = [
+    {
+      label: "범위",
+      value:
+        selectedRepoCount > 0 && selectedRepoCount !== repoCount
+          ? `${selectedRepoCount}/${repoCount} repo`
+          : `${repoCount} repo`,
+      detail: scenarioLabel,
+      icon: Boxes,
+    },
+    {
+      label: "변경",
+      value: `${featureCount} 기능`,
+      detail: `영향 ${changedCount} · 확인 ${riskCount}`,
+      icon: FileDiff,
+    },
+    {
+      label: "진입점",
+      value: "API / UI",
+      detail: "route · wrapper",
+      icon: Route,
+    },
+    {
+      label: "처리",
+      value: `${edgeCount} 연결`,
+      detail: "handler · function",
+      icon: ServerCog,
+    },
+    {
+      label: "근거",
+      value: evidenceCount > 0 ? `${evidenceCount} lines` : "summary",
+      detail: focusLabel,
+      icon: Code2,
+    },
+  ];
+
+  return (
+    <section className="structure-overview" aria-label="시스템 구조 요약">
+      {steps.map((step, index) => {
+        const Icon = step.icon;
+
+        return (
+          <div className="structure-step" key={step.label}>
+            <div className="structure-step-head">
+              <span>{index + 1}</span>
+              <Icon size={16} aria-hidden="true" />
+              <strong>{step.label}</strong>
+              {index < steps.length - 1 ? (
+                <ArrowRight size={14} aria-hidden="true" />
+              ) : null}
+            </div>
+            <p>{step.value}</p>
+            <small>{step.detail}</small>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
 function FeatureChangeList({ features }: { features: FeatureChange[] }) {
   const actionLabel: Record<FeatureChangeAction, string> = {
     added: "추가",
@@ -1501,14 +1555,25 @@ function TeamUpdateDetail({
 function ScanHistoryPanel({
   delta,
   history,
+  repos,
+  selectedRepoName,
+  prQuery,
+  onChangePrQuery,
+  onSelectRepo,
   onSelectEvent,
 }: {
   delta?: ScanDelta;
   history: ScanHistoryEvent[];
+  repos: RepoSummary[];
+  selectedRepoName: string | null;
+  prQuery: string;
+  onChangePrQuery: (value: string) => void;
+  onSelectRepo: (repoName: string | null) => void;
   onSelectEvent?: (event: ScanHistoryEvent) => void;
 }) {
   const currentEvents = delta?.events ?? [];
   const currentIds = new Set(currentEvents.map((event) => event.id));
+  const hasPrFilter = Boolean(selectedRepoName || prQuery.trim());
   const previousEvents = history
     .filter((event) => !currentIds.has(event.id))
     .slice(0, 4);
@@ -1519,6 +1584,41 @@ function ScanHistoryPanel({
         <h2>스캔 변화</h2>
         <span className="muted-count">{delta?.summary ?? "대기"}</span>
       </div>
+      {repos.length > 0 ? (
+        <div className="scan-filter-row" aria-label="PR 조회 필터">
+          <div className="scan-repo-toggle" aria-label="repo별 최근 PR">
+            <button
+              className={!selectedRepoName ? "is-active" : ""}
+              onClick={() => onSelectRepo(null)}
+              type="button"
+            >
+              전체
+            </button>
+            {repos.map((repo) => (
+              <button
+                className={selectedRepoName === repo.name ? "is-active" : ""}
+                key={repo.path}
+                onClick={() =>
+                  onSelectRepo(selectedRepoName === repo.name ? null : repo.name)
+                }
+                title={repo.name}
+                type="button"
+              >
+                {compactRepoName(repo.name)}
+              </button>
+            ))}
+          </div>
+          <label className="scan-pr-search">
+            <Search size={14} />
+            <input
+              inputMode="numeric"
+              onChange={(event) => onChangePrQuery(event.target.value)}
+              placeholder="PR 번호"
+              value={prQuery}
+            />
+          </label>
+        </div>
+      ) : null}
       <div className="history-list">
         {(currentEvents.length > 0
           ? currentEvents
@@ -1529,8 +1629,10 @@ function ScanHistoryPanel({
                 type: "none" as const,
                 scenarioId: "all",
                 scenarioLabel: "전체",
-                title: "스캔 기록 없음",
-                detail: "갱신을 누르면 직전 스냅샷과 비교합니다.",
+                title: hasPrFilter ? "PR 결과 없음" : "스캔 기록 없음",
+                detail: hasPrFilter
+                  ? "repo 또는 PR 번호 조건을 바꾸면 다시 조회됩니다."
+                  : "갱신을 누르면 직전 스냅샷과 비교합니다.",
                 items: [],
               },
             ]
@@ -1697,10 +1799,13 @@ export function WhereAmIClient() {
   const [query, setQuery] = useState("");
   const [graphMode, setGraphMode] = useState<GraphMode>("focus");
   const [selectedRepoNames, setSelectedRepoNames] = useState<string[]>([]);
+  const [scanRepoName, setScanRepoName] = useState<string | null>(null);
+  const [scanPrQuery, setScanPrQuery] = useState("");
   const [changedOnly, setChangedOnly] = useState(false);
   const [riskOnly, setRiskOnly] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState("ui-dashboard");
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectionFocusActive, setSelectionFocusActive] = useState(false);
   const [selectedTeamUpdateKey, setSelectedTeamUpdateKey] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<WhereAmISnapshot | null>(null);
   const [snapshotState, setSnapshotState] = useState<SnapshotState>("loading");
@@ -1708,7 +1813,7 @@ export function WhereAmIClient() {
   const [refreshNote, setRefreshNote] = useState("");
   const [leftPanelWidth, setLeftPanelWidth] = useState(286);
   const [leftPanelDraftWidth, setLeftPanelDraftWidth] = useState<number | null>(null);
-  const [detailPanelHeight, setDetailPanelHeight] = useState(520);
+  const [detailPanelHeight, setDetailPanelHeight] = useState(420);
 
   useEffect(() => {
     let alive = true;
@@ -1825,10 +1930,7 @@ export function WhereAmIClient() {
       const matchesRepo =
         !hasRepoFilter || selectedRepoSet.has(node.data.repo);
       const matchesTeamUpdate =
-        !selectedTeamUpdate ||
-        (node.data.kind === "repo"
-          ? node.data.repo === selectedTeamUpdate.repo.name
-          : selectedTeamFileSet.has(teamUpdateFileKey(node.data.repo, node.data.path)));
+        !selectedTeamUpdate || node.data.repo === selectedTeamUpdate.repo.name;
       const matchesMode =
         hasQuery ||
         (graphMode === "focus" &&
@@ -1925,7 +2027,6 @@ export function WhereAmIClient() {
     riskOnly,
     scenario,
     selectedRepoSet,
-    selectedTeamFileSet,
     selectedTeamUpdate,
   ]);
   const displayGraph = useMemo(
@@ -1976,70 +2077,145 @@ export function WhereAmIClient() {
     selectedTeamFileSet,
     selectedTeamUpdate,
   ]);
-  const filteredFiles = useMemo(() => {
-    if (selectedTeamUpdate) {
-      return (selectedTeamUpdate.update.files ?? []).map((file) =>
-        teamUpdateFileKey(selectedTeamUpdate.repo.name, file),
-      );
+  const filtered = useMemo(() => {
+    const highlightedNodeIds = new Set<string>();
+    const highlightedEdgeIds = new Set<string>();
+    const prChangedNodeIds = new Set(
+      selectedTeamUpdate
+        ? displayGraph.nodes
+            .filter((node) => matchesTeamUpdateFile(node, selectedTeamFileSet))
+            .map((node) => node.id)
+        : [],
+    );
+    const selectedRepoNodeIds = new Set(
+      hasRepoFilter
+        ? displayGraph.nodes
+            .filter((node) => selectedRepoSet.has(node.data.repo))
+            .map((node) => node.id)
+        : [],
+    );
+
+    if (selectionFocusActive && selectedEdge) {
+      highlightedEdgeIds.add(selectedEdge.id);
+      highlightedNodeIds.add(selectedEdge.source);
+      highlightedNodeIds.add(selectedEdge.target);
+    } else if (
+      selectionFocusActive &&
+      selectedTeamUpdate &&
+      prChangedNodeIds.size > 0
+    ) {
+      prChangedNodeIds.forEach((nodeId) => highlightedNodeIds.add(nodeId));
+      displayGraph.edges.forEach((edge) => {
+        if (!prChangedNodeIds.has(edge.source) && !prChangedNodeIds.has(edge.target)) {
+          return;
+        }
+        highlightedEdgeIds.add(edge.id);
+        highlightedNodeIds.add(edge.source);
+        highlightedNodeIds.add(edge.target);
+      });
+    } else if (selectionFocusActive && selectedRepoNodeIds.size > 0) {
+      selectedRepoNodeIds.forEach((nodeId) => highlightedNodeIds.add(nodeId));
+      displayGraph.edges.forEach((edge) => {
+        if (
+          !selectedRepoNodeIds.has(edge.source) &&
+          !selectedRepoNodeIds.has(edge.target)
+        ) {
+          return;
+        }
+        highlightedEdgeIds.add(edge.id);
+        highlightedNodeIds.add(edge.source);
+        highlightedNodeIds.add(edge.target);
+      });
+    } else if (selectionFocusActive && selectedNode) {
+      highlightedNodeIds.add(selectedNode.id);
+      displayGraph.edges.forEach((edge) => {
+        if (edge.source !== selectedNode.id && edge.target !== selectedNode.id) {
+          return;
+        }
+        highlightedEdgeIds.add(edge.id);
+        highlightedNodeIds.add(edge.source);
+        highlightedNodeIds.add(edge.target);
+      });
     }
 
-    if (!hasRepoFilter) return scenario.files;
+    const hasFocus = selectionFocusActive && highlightedNodeIds.size > 0;
 
-    return scenario.files.filter((file) =>
-      selectedRepoNames.some((repoName) => file.startsWith(`${repoName}/`)),
-    );
-  }, [hasRepoFilter, scenario.files, selectedRepoNames, selectedTeamUpdate]);
-  const filtered = useMemo(
-    () => ({
-      nodes: displayGraph.nodes.map((node) => ({
-        ...node,
-        selected: node.id === selectedNode.id,
-      })),
-      edges: displayGraph.edges.map((edge) => {
-        if (!selectedEdgeId || !selectedEdge) return edge;
-
-        const isSelectedEdge = edge.id === selectedEdgeId;
-
+    return {
+      nodes: displayGraph.nodes.map((node) => {
+        const isHighlighted = highlightedNodeIds.has(node.id);
+        const isPrChanged = prChangedNodeIds.has(node.id);
         return {
-          ...edge,
-          animated: isSelectedEdge ? edge.animated : false,
-          selected: isSelectedEdge,
+          ...node,
+          selected: node.id === selectedNode.id,
           className: [
-            edge.className,
-            isSelectedEdge ? "is-selected-edge" : "is-muted-edge",
+            node.className,
+            isPrChanged ? "is-pr-node" : "",
+            hasFocus && isHighlighted ? "is-focus-node" : "",
+            hasFocus && !isHighlighted ? "is-dimmed-node" : "",
           ]
             .filter(Boolean)
             .join(" "),
+        };
+      }),
+      edges: displayGraph.edges.map((edge) => {
+        if (!hasFocus) return edge;
+
+        const isSelectedEdge = edge.id === selectedEdgeId;
+        const isHighlighted = highlightedEdgeIds.has(edge.id);
+
+        return {
+          ...edge,
+          animated: false,
+          selected: isSelectedEdge,
+          className: [
+            edge.className,
+            isSelectedEdge
+              ? "is-selected-edge"
+              : isHighlighted
+                ? "is-highlight-edge"
+                : "is-muted-edge",
+          ]
+            .filter(Boolean)
+            .join(" "),
+          style: {
+            ...edge.style,
+            strokeOpacity: isHighlighted ? 0.96 : 0.1,
+            strokeWidth: isSelectedEdge ? 6 : isHighlighted ? 4 : 1.5,
+          },
           labelStyle: {
             ...edge.labelStyle,
-            fill: isSelectedEdge ? "#020617" : "#64748b",
-            fontWeight: isSelectedEdge ? 900 : edge.labelStyle?.fontWeight,
+            fill: isHighlighted ? "#020617" : "#64748b",
+            fontWeight: isHighlighted ? 900 : edge.labelStyle?.fontWeight,
           },
           labelBgStyle: {
             ...edge.labelBgStyle,
-            fillOpacity: isSelectedEdge ? 1 : 0.34,
+            fillOpacity: isHighlighted ? 1 : 0.24,
           },
         };
       }),
-    }),
-    [
-      displayGraph,
-      selectedEdge,
-      selectedEdgeId,
-      selectedNode.id,
-    ],
-  );
+    };
+  }, [
+    displayGraph,
+    hasRepoFilter,
+    selectedEdge,
+    selectedEdgeId,
+    selectedNode,
+    selectedRepoSet,
+    selectedTeamFileSet,
+    selectedTeamUpdate,
+    selectionFocusActive,
+  ]);
   const scanDelta = normalizeScanDelta(snapshot?.scanDelta);
   const scanHistory = normalizeHistoryEvents(snapshot?.history);
   const visibleScanDelta = useMemo(
     () =>
       buildTeamUpdateEvents(
         snapshot?.repos ?? [],
-        selectedRepoNames,
-        selectedTeamUpdate,
         scanDelta,
+        scanRepoName,
+        scanPrQuery,
       ),
-    [scanDelta, selectedRepoNames, selectedTeamUpdate, snapshot?.repos],
+    [scanDelta, scanPrQuery, scanRepoName, snapshot?.repos],
   );
   const commitScope = useMemo(
     () =>
@@ -2066,11 +2242,25 @@ export function WhereAmIClient() {
       ),
     [filteredGraph.nodes],
   );
+  const selectedEvidenceCount = selectedEdge
+    ? normalizeEvidenceItems(selectedEdge.data?.evidenceItems).length
+    : selectedNode.data.evidenceItems?.length ?? 0;
+  const visibleRepoCount = useMemo(
+    () =>
+      snapshot?.repos?.length ??
+      new Set(filteredGraph.nodes.map((node) => node.data.repo)).size,
+    [filteredGraph.nodes, snapshot?.repos],
+  );
+  const selectedStructureRepoCount = visibleRepoCount;
+  const structureFocusLabel = selectedEdge
+    ? String(selectedEdge.label ?? "연결")
+    : selectedNode.data.title;
 
   function selectScenario(nextScenarioId: ScenarioId) {
     const nextScenario = availableScenarios.find((item) => item.id === nextScenarioId);
     setScenarioId(nextScenarioId);
     setSelectedEdgeId(null);
+    setSelectionFocusActive(false);
     setSelectedTeamUpdateKey(null);
     setSelectedNodeId(nextScenario?.focusNodeId ?? "");
   }
@@ -2081,13 +2271,6 @@ export function WhereAmIClient() {
         (node) => node.data.kind !== "repo" && node.data.repo === repoName,
       )?.id ?? ""
     );
-  }
-
-  function clearRepoFilter() {
-    setSelectedRepoNames([]);
-    setSelectedEdgeId(null);
-    setSelectedTeamUpdateKey(null);
-    setSelectedNodeId(scenario.focusNodeId);
   }
 
   function selectRepoForMap(repo: RepoSummary) {
@@ -2102,6 +2285,7 @@ export function WhereAmIClient() {
     setSelectedRepoNames(nextSelectedRepoNames);
     setSelectedTeamUpdateKey(null);
     setSelectedEdgeId(null);
+    setSelectionFocusActive(nextSelectedRepoNames.length > 0);
     setGraphMode("all");
     setChangedOnly(false);
     setRiskOnly(false);
@@ -2119,9 +2303,10 @@ export function WhereAmIClient() {
   function selectScanEvent(event: ScanHistoryEvent) {
     if (!event.repoName || !event.updateKey) return;
     setScenarioId("team-briefing");
-    setSelectedRepoNames([event.repoName]);
+    setSelectedRepoNames([]);
     setSelectedTeamUpdateKey(event.updateKey);
     setSelectedEdgeId(null);
+    setSelectionFocusActive(true);
     setGraphMode("all");
     setChangedOnly(false);
     setRiskOnly(false);
@@ -2135,6 +2320,7 @@ export function WhereAmIClient() {
 
   function clearTeamUpdateFilter() {
     setSelectedTeamUpdateKey(null);
+    setSelectionFocusActive(false);
     setSelectedNodeId(
       selectedRepoNames.length === 1
         ? findRepoFlowNodeId(selectedRepoNames[0]) || scenario.focusNodeId
@@ -2297,17 +2483,7 @@ export function WhereAmIClient() {
             <section className="panel-section">
               <div className="section-title-row">
                 <h2>연결 repo</h2>
-                {hasRepoFilter ? (
-                  <button
-                    className="clear-filter-button"
-                    onClick={clearRepoFilter}
-                    type="button"
-                  >
-                    전체
-                  </button>
-                ) : (
-                  <span className="muted-count">전체</span>
-                )}
+                <span className="muted-count">조회</span>
               </div>
               <div className="repo-list">
                 {snapshot.repos.map((repo) => {
@@ -2316,7 +2492,7 @@ export function WhereAmIClient() {
 
                   return (
                     <article
-                      aria-label={`${repo.name} API 흐름 선택`}
+                      aria-label={`${repo.name} API와 워크플로우 조회`}
                       aria-pressed={isSelected}
                       className={`repo-item repo-item--selectable ${
                         isSelected ? "is-selected" : ""
@@ -2362,16 +2538,6 @@ export function WhereAmIClient() {
             </div>
           </section>
 
-          <section className="panel-section">
-            <h2>변경 파일</h2>
-            <ul className="file-list">
-              {filteredFiles.length > 0 ? (
-                filteredFiles.map((file) => <li key={file}>{file}</li>)
-              ) : (
-                <li>선택 repo 기준 변경 파일 없음</li>
-              )}
-            </ul>
-          </section>
         </aside>
         <button
           aria-label="좌측 패널 폭 조절"
@@ -2410,8 +2576,7 @@ export function WhereAmIClient() {
               ) : null}
               {hiddenCount > 0 &&
               graphMode === "focus" &&
-              !query.trim() &&
-              !hasRepoFilter ? (
+              !query.trim() ? (
                 <span>숨김 {hiddenCount}</span>
               ) : null}
             </div>
@@ -2473,21 +2638,23 @@ export function WhereAmIClient() {
               확인 필요만
             </label>
           </div>
-          <div className="flow-stage-guide" aria-label="호출 흐름 단계">
-            {["요청", "호출", "API", "처리", "데이터 · 검증"].map(
-              (stage, index) => (
-                <span key={stage}>
-                  <strong>{index + 1}</strong>
-                  {stage}
-                  {index < 4 ? <ArrowRight size={14} aria-hidden="true" /> : null}
-                </span>
-              ),
-            )}
-          </div>
+          <StructureOverview
+            changedCount={
+              statusCounts.active + statusCounts.added + statusCounts.changed
+            }
+            edgeCount={filtered.edges.length}
+            evidenceCount={selectedEvidenceCount}
+            featureCount={filteredFeatureChanges.length}
+            focusLabel={structureFocusLabel}
+            repoCount={visibleRepoCount}
+            riskCount={statusCounts.risk}
+            scenarioLabel={scenario.label}
+            selectedRepoCount={selectedStructureRepoCount}
+          />
 
           <ReactFlowProvider>
             <ReactFlow
-              className={`flow-stage ${selectedEdge ? "has-selected-edge" : ""}`}
+              className={`flow-stage ${selectionFocusActive ? "has-selection-focus" : ""}`}
               colorMode="light"
               edges={filtered.edges}
               fitView
@@ -2500,12 +2667,17 @@ export function WhereAmIClient() {
               onEdgeClick={(event, edge) => {
                 event.stopPropagation();
                 setSelectedEdgeId(edge.id);
+                setSelectionFocusActive(true);
               }}
               onNodeClick={(_, node) => {
                 setSelectedEdgeId(null);
                 setSelectedNodeId(node.id);
+                setSelectionFocusActive(true);
               }}
-              onPaneClick={() => setSelectedEdgeId(null)}
+              onPaneClick={() => {
+                setSelectedEdgeId(null);
+                setSelectionFocusActive(false);
+              }}
               panOnScroll
               proOptions={{ hideAttribution: true }}
             >
@@ -2534,8 +2706,13 @@ export function WhereAmIClient() {
           </button>
           <ScanHistoryPanel
             delta={visibleScanDelta}
-            history={selectedRepoNames.length > 0 || selectedTeamUpdate ? [] : scanHistory}
+            history={selectedTeamUpdate ? [] : scanHistory}
+            onChangePrQuery={setScanPrQuery}
+            onSelectRepo={setScanRepoName}
             onSelectEvent={selectScanEvent}
+            prQuery={scanPrQuery}
+            repos={snapshot?.repos ?? []}
+            selectedRepoName={scanRepoName}
           />
           {selectedTeamUpdate ? (
             <TeamUpdateDetail
