@@ -21,6 +21,7 @@ const defaultConfig = {
     filesPerRepo: 900,
     apiFilesPerRepo: 2400,
     apiNodesPerScenario: 800,
+    errorCodesPerRepo: 800,
     changedFiles: 80,
     historyEvents: 24,
     nodesPerScenario: 26,
@@ -211,11 +212,15 @@ function scanRepo(repo) {
   const apiCatalogFiles = trackedFiles
     .filter(isApiCatalogFile)
     .slice(0, config.scanLimits.apiFilesPerRepo);
+  const errorCodeFiles = trackedFiles
+    .filter((file) => isErrorCodeCandidateFile(file, repo.type))
+    .slice(0, config.scanLimits.errorCodesPerRepo);
   const sampledTrackedFiles = trackedFiles.slice(0, config.scanLimits.filesPerRepo);
   const priorityFiles = unique([
     ...changedFiles,
     ...teamChangedFiles,
     ...apiCatalogFiles,
+    ...errorCodeFiles,
     ...sampledTrackedFiles.filter(isPriorityFile),
   ]).filter(isScannable);
   const entities = extractEntities(repo, priorityFiles, fileStatuses, teamChangedFiles, changeDetails);
@@ -246,6 +251,7 @@ function emptyEntities() {
     uiFiles: [],
     engineEndpoints: [],
     engineFlows: [],
+    errorCodes: [],
     docs: [],
     tests: [],
     dbFiles: [],
@@ -737,6 +743,19 @@ function isApiCatalogFile(file) {
   );
 }
 
+function isErrorCodeCandidateFile(file, repoType) {
+  const lower = file.toLowerCase();
+  const hasErrorPath =
+    /(^|\/)(errors?|exceptions?|failures?|failure[_-]?reasons?|error[_-]?codes?|result[_-]?codes?|status[_-]?codes?|problem[_-]?codes?|constants?|enums?|types?|schemas?|models?)(\.|\/|$)/.test(
+      lower,
+    ) || /(^|\/)(errors?|exceptions?|failures?)(\/|$)/.test(lower);
+  const isEnginePath =
+    repoType === "engine" ||
+    /(^|\/)(engine|analytics|services\/engine|src\/engine)(\/|$)/.test(lower);
+
+  return isEnginePath && hasErrorPath;
+}
+
 function extractEntities(repo, files, fileStatuses, teamChangedFiles, changeDetails) {
   const entities = emptyEntities();
   const teamSet = new Set(teamChangedFiles);
@@ -807,6 +826,9 @@ function extractEntities(repo, files, fileStatuses, teamChangedFiles, changeDeta
 
     entities.routes.push(...extractGoRoutes(text, base));
     entities.engineEndpoints.push(...extractPythonRoutes(text, base));
+    if (repo.type === "engine" || isErrorCodeCandidateFile(file, repo.type)) {
+      entities.errorCodes.push(...extractEngineErrorCodes(text, base));
+    }
     if (isFrontendApiFile(file)) {
       entities.wrappers.push(...extractFrontendApiCalls(text, base));
     }
@@ -826,6 +848,10 @@ function extractEntities(repo, files, fileStatuses, teamChangedFiles, changeDeta
   entities.routes = dedupeApiRoutes(entities.routes).slice(0, config.scanLimits.apiNodesPerScenario);
   entities.engineEndpoints = dedupeApiRoutes(entities.engineEndpoints).slice(0, config.scanLimits.apiNodesPerScenario);
   entities.engineFlows = uniqueBy(entities.engineFlows, (item) => item.id).slice(0, 40);
+  entities.errorCodes = dedupeEngineErrorCodes(entities.errorCodes).slice(
+    0,
+    config.scanLimits.errorCodesPerRepo,
+  );
   entities.wrappers = uniqueBy(entities.wrappers, (item) => `${item.method} ${item.path} ${item.file}`).slice(0, 120);
   entities.uiFiles = uniqueBy(entities.uiFiles, (item) => item.file).slice(0, 80);
   entities.docs = uniqueBy(entities.docs, (item) => item.file).slice(0, 80);
@@ -1146,54 +1172,6 @@ function buildEngineFlowEntities(repo, fileStatuses, teamSet, changeDetails) {
       evidence: "publish_artifact + deliver_callback",
       transition: "artifact 저장 후 callback 응답",
     },
-    {
-      group: "error-code",
-      step: 1,
-      slug: "admission",
-      method: "ERR-001",
-      path: "admission",
-      file: "services/engine/services/error_codes.py",
-      title: "ERR-001 admission",
-      summary: "admission 단계에서 run을 거절하는 비재시도 실패 코드",
-      evidence: "EngineFailure(ERR-001, admission, reject_run)",
-      status: "risk",
-    },
-    {
-      group: "error-code",
-      step: 2,
-      slug: "query",
-      method: "ERR-201",
-      path: "query_request_failed",
-      file: "services/engine/services/error_codes.py",
-      title: "ERR-201 query",
-      summary: "query request 실패 계열 source 오류 코드",
-      evidence: "query_request_failed -> ERR-201",
-      status: "risk",
-    },
-    {
-      group: "error-code",
-      step: 3,
-      slug: "model-fit",
-      method: "ERR-401",
-      path: "model_fit",
-      file: "services/engine/services/error_codes.py",
-      title: "ERR-401 model fit",
-      summary: "model fit 단계 실패 코드",
-      evidence: "model_fit_failed -> ERR-401",
-      status: "risk",
-    },
-    {
-      group: "error-code",
-      step: 4,
-      slug: "artifact",
-      method: "ERR-502",
-      path: "artifact_publish",
-      file: "services/engine/services/error_codes.py",
-      title: "ERR-502 artifact publish",
-      summary: "artifact publish 실패, retry_then_fail",
-      evidence: "artifact_publish_failed -> ERR-502",
-      status: "risk",
-    },
   ];
 
   return definitions
@@ -1224,6 +1202,110 @@ function buildEngineFlowEntities(repo, fileStatuses, teamSet, changeDetails) {
         },
       };
     });
+}
+
+function extractEngineErrorCodes(text, base) {
+  const lines = text.split("\n");
+  const codes = [];
+  const catalogContext = isErrorCodeCandidateFile(base.file, base.repoType);
+  const codePatterns = [
+    /\b([A-Z]{2,12}(?:-[A-Z0-9]{2,24})+)\b/g,
+    /\b((?:ERR|ERROR|FAILURE|FAILED|INVALID|MISSING|DENIED|TIMEOUT|UNAVAILABLE|UNAUTHORIZED|FORBIDDEN|CONFLICT|EXPIRED)[A-Z0-9_]{2,64})\b/g,
+    /\b([A-Z][A-Z0-9]{2,32}_(?:ERROR|ERR|FAILED|FAILURE|TIMEOUT|UNAVAILABLE|INVALID|DENIED|MISSING|NOT_FOUND|CONFLICT|EXPIRED)[A-Z0-9_]*)\b/g,
+  ];
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//")) return;
+
+    for (const pattern of codePatterns) {
+      pattern.lastIndex = 0;
+      for (const match of trimmed.matchAll(pattern)) {
+        const code = match[1];
+        if (!isLikelyErrorCode(code, trimmed, catalogContext)) continue;
+        const label = extractErrorCodeLabel(trimmed, code);
+        const status = base.status === "stable" ? "risk" : base.status;
+
+        codes.push({
+          ...base,
+          id: `engine-error:${base.repo}:${hash(code)}`,
+          kind: "engine",
+          method: code,
+          path: code,
+          line: index + 1,
+          title: label ? `${code} ${label}` : code,
+          summary: label ? `엔진 에러코드: ${label}` : "엔진 에러코드",
+          evidence: `${base.file}:${index + 1} :: ${trimDiffLine(trimmed)}`,
+          status,
+          flowGroup: "error-code",
+          errorCode: code,
+        });
+      }
+    }
+  });
+
+  return codes;
+}
+
+function isLikelyErrorCode(code, line, catalogContext) {
+  const upperLine = line.toUpperCase();
+  const hasErrorContext =
+    /(ERROR|ERR|EXCEPTION|FAIL|FAILED|FAILURE|INVALID|MISSING|DENIED|TIMEOUT|UNAVAILABLE|UNAUTHORIZED|FORBIDDEN|CONFLICT|EXPIRED|NOT_FOUND|REJECT|오류|에러)/i.test(
+      line,
+    );
+  const codeLooksExplicit =
+    /^[A-Z]{2,12}-[A-Z0-9]{2,24}(?:-[A-Z0-9]{2,24})*$/.test(code) ||
+    /^(ERR|ERROR|E)[-_]/.test(code) ||
+    /(ERROR|ERR|FAIL|FAILED|FAILURE|INVALID|MISSING|DENIED|TIMEOUT|UNAVAILABLE|UNAUTHORIZED|FORBIDDEN|CONFLICT|EXPIRED|NOT_FOUND|REJECT)/.test(
+      code,
+    );
+
+  if (!codeLooksExplicit) return false;
+  if (hasErrorContext) return true;
+  if (!catalogContext) return false;
+  if (/\d/.test(code)) return true;
+
+  return upperLine.includes("CODE") || upperLine.includes("REASON");
+}
+
+function extractErrorCodeLabel(line, code) {
+  const beforeCode = line.slice(0, Math.max(0, line.indexOf(code)));
+  const named = beforeCode.match(/([A-Za-z][A-Za-z0-9_]{2,80})\s*[:=]\s*["'`]?$/) ??
+    beforeCode.match(/([A-Z][A-Z0-9_]{2,80})\s*[:=]\s*["'`]?$/);
+  if (!named) return "";
+
+  return humanizeToken(named[1].toLowerCase()).slice(0, 56);
+}
+
+function dedupeEngineErrorCodes(errorCodes) {
+  const byCode = new Map();
+
+  for (const item of errorCodes) {
+    const key = `${item.repo}:${item.errorCode}`;
+    const existing = byCode.get(key);
+    if (!existing || engineErrorCodeScore(item) > engineErrorCodeScore(existing)) {
+      byCode.set(key, item);
+    }
+  }
+
+  return [...byCode.values()]
+    .sort((left, right) =>
+      left.repo.localeCompare(right.repo) ||
+      String(left.errorCode).localeCompare(String(right.errorCode), undefined, {
+        numeric: true,
+      }),
+    )
+    .map((item, index) => ({
+      ...item,
+      flowStep: index + 1,
+    }));
+}
+
+function engineErrorCodeScore(item) {
+  const statusScore = item.status === "stable" ? 0 : 80;
+  const fileScore = isErrorCodeCandidateFile(item.file, item.repoType) ? 40 : 0;
+  const lineScore = item.line ? Math.max(0, 30 - item.line / 100) : 0;
+  return statusScore + fileScore + lineScore;
 }
 
 function extractFrontendApiCalls(text, base) {
@@ -1328,6 +1410,7 @@ function buildSnapshot(repos, previousSnapshot) {
       routeCount: repo.entities.routes.length,
       wrapperCount: repo.entities.wrappers.length,
       engineEndpointCount: repo.entities.engineEndpoints.length,
+      engineErrorCodeCount: repo.entities.errorCodes.length,
       warnings: repo.warnings,
     })),
     warnings: repos.flatMap((repo) =>
@@ -1610,7 +1693,12 @@ function buildScenario(id, label, description, repos) {
   const files = [];
   const briefing = [];
   const graphRepos = isEngineFlow
-    ? repos.filter((repo) => repo.type === "engine" || repo.entities.engineEndpoints.length > 0)
+    ? repos.filter(
+        (repo) =>
+          repo.type === "engine" ||
+          repo.entities.engineEndpoints.length > 0 ||
+          repo.entities.errorCodes.length > 0,
+      )
     : repos;
 
   graphRepos.forEach((repo, index) => {
@@ -1670,6 +1758,9 @@ function buildScenario(id, label, description, repos) {
   const engineFlows = isEngineFlow
     ? repos.flatMap((repo) => repo.entities.engineFlows)
     : [];
+  const errorCodes = isEngineFlow
+    ? repos.flatMap((repo) => repo.entities.errorCodes)
+    : [];
   const docs = selectEntities(
     repos.flatMap((repo) => repo.entities.docs),
     contextTokens,
@@ -1690,7 +1781,7 @@ function buildScenario(id, label, description, repos) {
   );
 
   const selectedEntities = isEngineFlow
-    ? [...engineFlows, ...endpoints]
+    ? [...engineFlows, ...errorCodes, ...endpoints]
     : [...wrappers, ...routes, ...endpoints, ...docs, ...tests, ...dbFiles];
   const featureChanges = buildFeatureChanges(selectedFiles, selectedEntities, mode);
 
@@ -1723,7 +1814,7 @@ function buildScenario(id, label, description, repos) {
 
   connectByFile(nodes, edges);
   connectApiFlow(wrappers, routes, endpoints, edges);
-  connectEngineFlows(engineFlows, edges);
+  connectEngineFlows(engineFlows, errorCodes, edges);
   connectContracts(routes, docs, tests, edges);
   connectData(routes, dbFiles, edges);
 
@@ -1742,7 +1833,7 @@ function buildScenario(id, label, description, repos) {
       {
         type: "주의",
         title: "에러 코드 표시",
-        detail: "query/source/feature/artifact/callback 실패가 error-code 노드로 연결됨",
+        detail: `${errorCodes.length}개 스캔됨 · 코드 정의 파일 기준`,
       },
     );
   } else if (featureChanges.length > 0) {
@@ -2177,6 +2268,7 @@ function assignPositions(nodes) {
     "repo",
     "file",
     ...Array.from({ length: 12 }, (_, index) => `flow-${index + 1}`),
+    "error-code",
     "surface",
     "api",
     "downstream",
@@ -2245,6 +2337,7 @@ function edgesForVisibleNodes(nodes, edges) {
 function nodeStage(item) {
   if (item.id.startsWith("repo:")) return "repo";
   if (item.id.startsWith("file:")) return "file";
+  if (item.id.startsWith("engine-error:")) return "error-code";
   const flowStage = item.id.match(/^engine-flow:[^:]+:(\d+)-/);
   if (flowStage) return `flow-${flowStage[1]}`;
   if (item.data.kind === "ui" || item.data.kind === "wrapper") return "surface";
@@ -2255,7 +2348,7 @@ function nodeStage(item) {
 function nodeLaneOrder(item) {
   if (item.id.startsWith("engine-flow:analysis:")) return 0;
   if (item.id.startsWith("engine-flow:training:")) return 1;
-  if (item.id.startsWith("engine-flow:snt:")) return 2;
+  if (item.id.startsWith("engine-error:")) return 2;
   return 0;
 }
 
@@ -2371,9 +2464,8 @@ function connectApiFlow(wrappers, routes, endpoints, edges) {
   }
 }
 
-function connectEngineFlows(engineFlows, edges) {
+function connectEngineFlows(engineFlows, errorCodes, edges) {
   const byGroup = new Map();
-  const byFlowId = new Map(engineFlows.map((item) => [item.id, item]));
 
   for (const item of engineFlows) {
     const group = byGroup.get(item.flowGroup) ?? [];
@@ -2401,33 +2493,51 @@ function connectEngineFlows(engineFlows, edges) {
     }
   }
 
-  const branches = [
-    [
-      "engine-flow:training:1-start",
-      "engine-flow:error-code:1-admission",
-      "admission reject -> ERR-001",
-    ],
-    [
-      "engine-flow:analysis:3-query-fetch",
-      "engine-flow:error-code:2-query",
-      "query_request_failed -> ERR-201",
-    ],
-    [
-      "engine-flow:training:5-fit",
-      "engine-flow:error-code:3-model-fit",
-      "model fit failure -> ERR-401",
-    ],
-    [
-      "engine-flow:training:6-publish",
-      "engine-flow:error-code:4-artifact",
-      "artifact publish failed -> ERR-502",
-    ],
-  ];
-
-  for (const [source, target, label] of branches) {
-    if (!byFlowId.has(source) || !byFlowId.has(target)) continue;
-    edges.push(edge(source, target, label, "risk"));
+  for (const errorCode of errorCodes) {
+    const matchedFlow = findEngineFlowForErrorCode(engineFlows, errorCode);
+    if (!matchedFlow) continue;
+    edges.push(
+      edge(
+        entityId(matchedFlow),
+        entityId(errorCode),
+        `${errorCode.errorCode ?? errorCode.method} 발생`,
+        "risk",
+      ),
+    );
   }
+}
+
+function findEngineFlowForErrorCode(engineFlows, errorCode) {
+  const errorText = `${errorCode.file} ${errorCode.title} ${errorCode.summary} ${errorCode.evidence}`;
+  const scored = engineFlows
+    .map((flow) => ({
+      flow,
+      score: engineFlowErrorMatchScore(flow, errorCode, errorText),
+    }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  return scored[0]?.flow ?? null;
+}
+
+function engineFlowErrorMatchScore(flow, errorCode, errorText) {
+  let score = 0;
+  if (flow.file === errorCode.file) score += 120;
+  score += tokenOverlap(`${flow.file} ${flow.path} ${flow.title}`, errorText) * 18;
+
+  const lowerErrorText = errorText.toLowerCase();
+  const lowerFlowText = `${flow.file} ${flow.path} ${flow.title}`.toLowerCase();
+  if (/query|source|fetch/.test(lowerErrorText) && /query|source|fetch|collect/.test(lowerFlowText)) {
+    score += 35;
+  }
+  if (/model|fit|train|artifact/.test(lowerErrorText) && /model|fit|train|artifact|publish/.test(lowerFlowText)) {
+    score += 35;
+  }
+  if (/callback|overlay|result/.test(lowerErrorText) && /callback|overlay|result/.test(lowerFlowText)) {
+    score += 35;
+  }
+
+  return score;
 }
 
 function connectContracts(routes, docs, tests, edges) {

@@ -182,6 +182,7 @@ type RepoSummary = {
   routeCount: number;
   wrapperCount: number;
   engineEndpointCount: number;
+  engineErrorCodeCount?: number;
   warnings?: string[];
 };
 
@@ -2138,6 +2139,9 @@ export function WhereAmIClient() {
                         local {repo.changedCount} / team {repo.teamChangedCount}
                         {teamUpdateLabel ? ` / ${teamUpdateLabel}` : ""} /
                         route {repo.routeCount} / engine {repo.engineEndpointCount}
+                        {repo.engineErrorCodeCount
+                          ? ` / error ${repo.engineErrorCodeCount}`
+                          : ""}
                       </small>
                     </article>
                   );

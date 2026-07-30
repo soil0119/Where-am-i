@@ -86,6 +86,7 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(client, /nodePositionOverrides/);
   assert.match(client, /moveGraphNodes/);
   assert.match(client, /nodesDraggable/);
+  assert.match(client, /engineErrorCodeCount/);
   assert.doesNotMatch(client, /repo-main/);
   assert.doesNotMatch(client, /team-pr-chip/);
   assert.match(packageJson, /"name": "where-am-i"/);
@@ -96,8 +97,13 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(scanServer, /watch\(/);
   assert.match(scanRepos, /extractOpenApiRoutes/);
   assert.match(scanRepos, /apiNodesPerScenario/);
+  assert.match(scanRepos, /errorCodesPerRepo/);
+  assert.match(scanRepos, /extractEngineErrorCodes/);
+  assert.match(scanRepos, /dedupeEngineErrorCodes/);
+  assert.match(scanRepos, /engineErrorCodeCount/);
   assert.match(scanRepos, /isApiCatalogFile/);
   assert.match(scanRepos, /repoRoots:\s*\[\]/);
+  assert.doesNotMatch(scanRepos, /engine-flow:error-code:[0-9]-/);
   assert.match(gitignore, /public\/whereami-snapshot\.json/);
   assert.match(gitignore, /whereami\.config\.json/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
