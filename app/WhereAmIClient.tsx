@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
@@ -1534,6 +1535,8 @@ export function WhereAmIClient() {
   const [detailPanelHeight, setDetailPanelHeight] = useState(520);
   const [nodePositionOverrides, setNodePositionOverrides] =
     useState<NodePositionOverrides>({});
+  const pendingNodePositionsRef = useRef<NodePositionOverrides>({});
+  const nodeDragFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -1858,18 +1861,64 @@ export function WhereAmIClient() {
     setSelectedNodeId(nodeId);
   }, []);
 
-  const moveGraphNodes = useCallback((changes: NodeChange<EntityNode>[]) => {
+  const flushPendingNodePositions = useCallback(() => {
+    const pending = pendingNodePositionsRef.current;
+    if (Object.keys(pending).length === 0) {
+      nodeDragFrameRef.current = null;
+      return;
+    }
+
+    pendingNodePositionsRef.current = {};
     setNodePositionOverrides((current) => {
       let next = current;
 
-      changes.forEach((change) => {
-        if (change.type !== "position" || !change.position) return;
+      Object.entries(pending).forEach(([id, position]) => {
+        if (next[id]?.x === position.x && next[id]?.y === position.y) return;
         if (next === current) next = { ...current };
-        next[change.id] = change.position;
+        next[id] = position;
       });
 
       return next;
     });
+    nodeDragFrameRef.current = null;
+  }, []);
+
+  const scheduleNodePositionFlush = useCallback(() => {
+    if (nodeDragFrameRef.current !== null) return;
+    nodeDragFrameRef.current = window.requestAnimationFrame(() => {
+      flushPendingNodePositions();
+    });
+  }, [flushPendingNodePositions]);
+
+  const moveGraphNodes = useCallback((changes: NodeChange<EntityNode>[]) => {
+    let hasPendingUpdate = false;
+
+    changes.forEach((change) => {
+      if (change.type !== "position" || !change.position) return;
+      const currentPosition = pendingNodePositionsRef.current[change.id];
+      if (
+        currentPosition &&
+        currentPosition.x === change.position.x &&
+        currentPosition.y === change.position.y
+      ) {
+        return;
+      }
+
+      pendingNodePositionsRef.current[change.id] = change.position;
+      hasPendingUpdate = true;
+    });
+
+    if (hasPendingUpdate) {
+      scheduleNodePositionFlush();
+    }
+  }, [scheduleNodePositionFlush]);
+
+  useEffect(() => {
+    return () => {
+      if (nodeDragFrameRef.current !== null) {
+        window.cancelAnimationFrame(nodeDragFrameRef.current);
+      }
+    };
   }, []);
 
   function selectScenario(nextScenarioId: ScenarioId) {
@@ -2288,6 +2337,7 @@ export function WhereAmIClient() {
               nodes={filtered.nodes}
               nodesDraggable
               onNodesChange={moveGraphNodes}
+              onNodeDragStop={flushPendingNodePositions}
               onEdgeClick={(event, edge) => {
                 event.stopPropagation();
                 setSelectedEdgeId(edge.id);
