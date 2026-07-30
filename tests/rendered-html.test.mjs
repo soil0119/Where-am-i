@@ -79,6 +79,10 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(client, /PR 변경/);
   assert.match(client, /compactTeamGraphNodes/);
   assert.match(client, /buildTeamUpdateEvents/);
+  assert.match(client, /useReactFlow/);
+  assert.match(client, /SearchNodeAutoFocus/);
+  assert.match(client, /findSearchTargetNode/);
+  assert.match(client, /searchFocusScore/);
   assert.doesNotMatch(client, /repo-main/);
   assert.doesNotMatch(client, /team-pr-chip/);
   assert.match(packageJson, /"name": "where-am-i"/);

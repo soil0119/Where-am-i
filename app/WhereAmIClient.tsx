@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -16,6 +17,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  useReactFlow,
   type Edge,
   type Node,
   type NodeProps,
@@ -731,6 +733,85 @@ function normalizeKind(value: unknown): EntityKind {
     : "repo";
 }
 
+function nodeSearchText(node: EntityNode) {
+  const change = node.data.change;
+  const metrics = (node.data.metrics ?? [])
+    .map((metric) => `${metric.label} ${metric.value}`)
+    .join(" ");
+  const signals = (change?.signals ?? [])
+    .map((signal) => `${signal.kind} ${signal.label}`)
+    .join(" ");
+
+  return [
+    node.id,
+    node.data.title,
+    node.data.repo,
+    node.data.path,
+    node.data.summary,
+    node.data.impact,
+    node.data.evidence,
+    ...node.data.badges,
+    metrics,
+    change?.summary,
+    change?.compare,
+    ...(change?.lines ?? []),
+    signals,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function searchFocusScore(node: EntityNode, lowerQuery: string) {
+  if (!nodeSearchText(node).includes(lowerQuery)) return 0;
+
+  const kindScore: Record<EntityKind, number> = {
+    api: 70,
+    wrapper: 62,
+    engine: 56,
+    ui: 34,
+    db: 28,
+    test: 24,
+    docs: 18,
+    repo: 10,
+  };
+  const title = node.data.title.toLowerCase();
+  const path = node.data.path.toLowerCase();
+  const evidence = node.data.evidence.toLowerCase();
+  const badgeText = node.data.badges.join(" ").toLowerCase();
+
+  let score = kindScore[node.data.kind];
+  if (title.includes(lowerQuery)) score += 44;
+  if (path.includes(lowerQuery)) score += 36;
+  if (evidence.includes(lowerQuery)) score += 28;
+  if (badgeText.includes(lowerQuery)) score += 16;
+  if (node.data.status !== "stable") score += 12;
+  if (node.data.change) score += 8;
+
+  return score;
+}
+
+function findSearchTargetNode(nodes: EntityNode[], query: string) {
+  const lowerQuery = query.trim().toLowerCase();
+  if (!lowerQuery) return null;
+
+  return (
+    nodes.reduce<{
+      index: number;
+      node: EntityNode;
+      score: number;
+    } | null>((best, node, index) => {
+      const score = searchFocusScore(node, lowerQuery);
+      if (score <= 0) return best;
+      if (!best || score > best.score || (score === best.score && index < best.index)) {
+        return { index, node, score };
+      }
+
+      return best;
+    }, null)?.node ?? null
+  );
+}
+
 function compactRepoName(name: string) {
   return name.split("/").at(-1) ?? name;
 }
@@ -1403,6 +1484,32 @@ function useResizeObserverLoopGuard() {
   }, []);
 }
 
+function SearchNodeAutoFocus({
+  node,
+  onFocusNode,
+}: {
+  node: EntityNode | null;
+  onFocusNode: (nodeId: string) => void;
+}) {
+  const { setCenter } = useReactFlow<EntityNode, Edge>();
+
+  useEffect(() => {
+    if (!node) return;
+
+    onFocusNode(node.id);
+    const timer = window.setTimeout(() => {
+      setCenter(node.position.x + 160, node.position.y + 80, {
+        duration: 420,
+        zoom: 0.86,
+      });
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [node, onFocusNode, setCenter]);
+
+  return null;
+}
+
 export function WhereAmIClient() {
   useResizeObserverLoopGuard();
 
@@ -1520,20 +1627,8 @@ export function WhereAmIClient() {
     };
 
     sourceNodes.forEach((node) => {
-      const searchable = [
-        node.data.title,
-        node.data.repo,
-        node.data.path,
-        node.data.summary,
-        node.data.impact,
-        node.data.evidence,
-        ...node.data.badges,
-      ]
-        .join(" ")
-        .toLowerCase();
-
       const matchesQuery =
-        !hasQuery || searchable.includes(lowerQuery);
+        !hasQuery || nodeSearchText(node).includes(lowerQuery);
       const matchesRepo =
         !hasRepoFilter || selectedRepoSet.has(node.data.repo);
       const matchesTeamUpdate =
@@ -1630,6 +1725,10 @@ export function WhereAmIClient() {
     scenario.nodes[0];
   const selectedEdge =
     filteredGraph.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
+  const searchTargetNode = useMemo(
+    () => findSearchTargetNode(filteredGraph.nodes, query),
+    [filteredGraph.nodes, query],
+  );
 
   const filteredFeatureChanges = useMemo(() => {
     const featureChanges = scenario.featureChanges ?? [];
@@ -1741,6 +1840,11 @@ export function WhereAmIClient() {
       ),
     [filteredGraph.nodes],
   );
+
+  const focusSearchNode = useCallback((nodeId: string) => {
+    setSelectedEdgeId(null);
+    setSelectedNodeId(nodeId);
+  }, []);
 
   function selectScenario(nextScenarioId: ScenarioId) {
     const nextScenario = availableScenarios.find((item) => item.id === nextScenarioId);
@@ -2177,6 +2281,10 @@ export function WhereAmIClient() {
               />
               <Controls position="bottom-left" />
             </ReactFlow>
+            <SearchNodeAutoFocus
+              node={searchTargetNode}
+              onFocusNode={focusSearchNode}
+            />
           </ReactFlowProvider>
         </section>
 
