@@ -50,6 +50,10 @@ type EntityKind =
   | "wrapper"
   | "api"
   | "engine"
+  | "handler"
+  | "function"
+  | "external"
+  | "error"
   | "db"
   | "docs"
   | "test";
@@ -79,6 +83,14 @@ type ChangeSignal = {
   action: "added" | "deleted";
   kind: string;
   label: string;
+};
+
+type EvidenceItem = {
+  file: string;
+  line: number;
+  text: string;
+  source: "static" | "git" | "runtime" | "inferred";
+  confidence: number;
 };
 
 type FeatureChangeAction = "added" | "deleted" | "changed";
@@ -128,6 +140,8 @@ type EntityNodeData = Record<string, unknown> & {
   impact: string;
   summary: string;
   evidence: string;
+  evidenceItems?: EvidenceItem[];
+  confidence?: number;
   badges: string[];
   metrics?: Metric[];
   change?: ChangeDetail;
@@ -178,6 +192,7 @@ type RepoSummary = {
   routeCount: number;
   wrapperCount: number;
   engineEndpointCount: number;
+  codeFactCount?: number;
   warnings?: string[];
 };
 
@@ -215,7 +230,7 @@ const LOCAL_SCAN_URL = "http://localhost:3010/scan";
 const LOCAL_SCAN_EVENTS_URL = "http://localhost:3010/events";
 const LEFT_PANEL_MIN_WIDTH = 220;
 const LEFT_PANEL_MAX_WIDTH = 460;
-const DETAIL_PANEL_MIN_HEIGHT = 300;
+const DETAIL_PANEL_MIN_HEIGHT = 260;
 const DETAIL_PANEL_MAX_HEIGHT = 780;
 const RESIZE_OBSERVER_LOOP_MESSAGES = new Set([
   "ResizeObserver loop completed with undelivered notifications.",
@@ -264,6 +279,10 @@ const kindIcon: Record<EntityKind, LucideIcon> = {
   wrapper: Code2,
   api: Route,
   engine: ServerCog,
+  handler: Code2,
+  function: Code2,
+  external: ServerCog,
+  error: AlertTriangle,
   db: Database,
   docs: BookOpenCheck,
   test: TestTubeDiagonal,
@@ -524,7 +543,7 @@ function relation(
     target,
     type: "smoothstep",
     label: showLabel ? label : undefined,
-    animated: status === "added" || status === "changed" || status === "risk",
+    animated: false,
     style: {
       stroke: color,
       strokeOpacity: status === "stable" ? 0.42 : 0.78,
@@ -574,8 +593,39 @@ function normalizeNode(node: EntityNode): EntityNode {
       status: normalizeStatus(node.data.status),
       badges: Array.isArray(node.data.badges) ? node.data.badges : [],
       change: normalizeChange(node.data.change),
+      evidenceItems: normalizeEvidenceItems(node.data.evidenceItems),
+      confidence:
+        typeof node.data.confidence === "number"
+          ? clamp(node.data.confidence, 0, 1)
+          : undefined,
     },
   };
+}
+
+function normalizeEvidenceItems(value: unknown): EvidenceItem[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return undefined;
+      const evidence = item as Partial<EvidenceItem>;
+      const source =
+        evidence.source === "git" ||
+        evidence.source === "runtime" ||
+        evidence.source === "inferred"
+          ? evidence.source
+          : "static";
+
+      return {
+        file: String(evidence.file ?? ""),
+        line: Number(evidence.line ?? 0),
+        text: String(evidence.text ?? ""),
+        source,
+        confidence: clamp(Number(evidence.confidence ?? 0), 0, 1),
+      };
+    })
+    .filter((item): item is EvidenceItem => Boolean(item?.file || item?.text))
+    .slice(0, 8);
 }
 
 function normalizeChange(value: unknown): ChangeDetail | undefined {
@@ -697,6 +747,10 @@ function normalizeHistoryEventType(value: unknown): ScanHistoryEventType {
 function normalizeEdge(edge: Edge): Edge {
   const status = normalizeStatus(edge.data?.status);
   const decorated = relation(edge.source, edge.target, String(edge.label ?? "uses"), status);
+  const confidence =
+    typeof edge.data?.confidence === "number"
+      ? clamp(edge.data.confidence, 0, 1)
+      : undefined;
 
   return {
     ...decorated,
@@ -704,6 +758,8 @@ function normalizeEdge(edge: Edge): Edge {
     data: {
       ...edge.data,
       status,
+      confidence,
+      evidenceItems: normalizeEvidenceItems(edge.data?.evidenceItems),
     },
   };
 }
@@ -724,6 +780,10 @@ function normalizeKind(value: unknown): EntityKind {
     value === "wrapper" ||
     value === "api" ||
     value === "engine" ||
+    value === "handler" ||
+    value === "function" ||
+    value === "external" ||
+    value === "error" ||
     value === "db" ||
     value === "docs" ||
     value === "test"
@@ -866,52 +926,73 @@ function teamUpdateFileKey(repoName: string, file: string) {
   return `${repoName}/${file}`;
 }
 
+function normalizeCodeFilePath(filePath: string) {
+  return filePath
+    .split("#")[0]
+    .replace(/:\d+(?::\d+)?$/, "")
+    .trim();
+}
+
+function matchesTeamUpdateFile(node: EntityNode, fileSet: Set<string>) {
+  if (fileSet.size === 0) return false;
+
+  const candidatePaths = [
+    node.data.path,
+    ...(node.data.evidenceItems ?? []).map((item) => item.file),
+  ];
+
+  return candidatePaths.some((filePath) => {
+    const normalized = normalizeCodeFilePath(filePath);
+    return (
+      normalized.length > 0 &&
+      fileSet.has(teamUpdateFileKey(node.data.repo, normalized))
+    );
+  });
+}
+
 function buildTeamUpdateEvents(
   repos: RepoSummary[],
-  selectedRepoNames: string[],
-  selectedUpdate: SelectedTeamUpdate | null,
   fallback?: ScanDelta,
+  selectedRepoName?: string | null,
+  prQuery = "",
 ): ScanDelta | undefined {
-  const fallbackEvents = fallback?.events ?? [];
-  const shouldUseLatestPrs =
-    selectedRepoNames.length === 0 &&
-    !selectedUpdate &&
-    fallbackEvents.length === 0;
-
-  if (selectedRepoNames.length === 0 && !selectedUpdate && !shouldUseLatestPrs) {
-    return fallback;
-  }
-
-  const selectedSet = new Set(
-    selectedRepoNames.length > 0
-      ? selectedRepoNames
-      : selectedUpdate
-        ? [selectedUpdate.repo.name]
-        : [],
-  );
-  const events = repos
-    .filter((repo) =>
-      selectedSet.size === 0 || selectedSet.has(repo.name),
-    )
+  const normalizedPrQuery = prQuery.replace(/^#/, "").trim();
+  const latestPrEvents = repos
+    .filter((repo) => !selectedRepoName || repo.name === selectedRepoName)
     .flatMap((repo) =>
       (repo.teamUpdates ?? [])
         .filter((update) => Boolean(update.prNumber))
         .map((update) => teamUpdateEvent(repo, update)),
     )
+    .filter(
+      (event) =>
+        normalizedPrQuery.length === 0 ||
+        String(event.title).includes(`#${normalizedPrQuery}`) ||
+        event.updateKey?.endsWith(`:${normalizedPrQuery}`),
+    )
     .sort((left, right) => Date.parse(right.at) - Date.parse(left.at))
-    .slice(0, shouldUseLatestPrs ? 5 : undefined);
+    .slice(0, 5);
+
+  if (
+    latestPrEvents.length === 0 &&
+    !selectedRepoName &&
+    normalizedPrQuery.length === 0
+  ) {
+    return fallback;
+  }
+
+  const summary = normalizedPrQuery
+    ? `PR #${normalizedPrQuery} ${latestPrEvents.length}`
+    : selectedRepoName
+      ? `${compactRepoName(selectedRepoName)} PR ${latestPrEvents.length}`
+      : `최근 PR ${latestPrEvents.length}`;
 
   return {
     from: fallback?.from ?? null,
     to: fallback?.to ?? new Date().toISOString(),
-    hasChanges: events.length > 0,
-    summary:
-      events.length > 0
-        ? shouldUseLatestPrs
-          ? `최근 PR ${events.length}`
-          : `PR ${events.length}`
-        : "PR 없음",
-    events,
+    hasChanges: latestPrEvents.length > 0,
+    summary,
+    events: latestPrEvents,
   };
 }
 
@@ -958,6 +1039,105 @@ function compactTeamGraphNodes(nodes: EntityNode[]) {
       },
     };
   });
+}
+
+const FLOW_COLUMN_GAP = 126;
+const FLOW_LANE_STEP_X = 356;
+const FLOW_NODE_STEP_Y = 188;
+const FLOW_STAGE_ROWS = 4;
+const FLOW_START_X = 70;
+const FLOW_START_Y = 64;
+
+function flowColumn(node: EntityNode) {
+  const engineFlowStep = node.id.match(/^engine-flow:[^:]+:(\d+)-/);
+  if (engineFlowStep) return Math.max(0, Number(engineFlowStep[1]) - 1);
+  if (node.id.startsWith("engine-error:")) return 5;
+
+  return {
+    ui: 0,
+    wrapper: 1,
+    api: 2,
+    engine: 3,
+    handler: 3,
+    function: 3,
+    external: 4,
+    error: 4,
+    db: 4,
+    docs: 4,
+    test: 4,
+    repo: 0,
+  }[node.data.kind];
+}
+
+function flowNodeOrder(node: EntityNode) {
+  if (node.id.startsWith("engine-flow:analysis:")) return 0;
+  if (node.id.startsWith("engine-flow:training:")) return 1;
+  if (node.id.startsWith("engine-error:")) return 2;
+
+  return node.data.title.localeCompare(node.data.title);
+}
+
+function layoutApiFlowGraph(nodes: EntityNode[], edges: Edge[]) {
+  const contentNodes = nodes.filter((node) => node.data.kind !== "repo");
+  const visibleIds = new Set(contentNodes.map((node) => node.id));
+  const flowEdges = edges.filter(
+    (edge) =>
+      visibleIds.has(edge.source) &&
+      visibleIds.has(edge.target) &&
+      edge.label !== "owns" &&
+      edge.label !== "changed file",
+  );
+
+  if (contentNodes.length === 0) {
+    return { nodes: contentNodes, edges: flowEdges };
+  }
+
+  const maxColumn = Math.max(4, ...contentNodes.map(flowColumn));
+  const byColumn = new Map<number, EntityNode[]>();
+  const positionedNodes: EntityNode[] = [];
+  let columnX = FLOW_START_X;
+
+  contentNodes.forEach((node) => {
+    const column = flowColumn(node);
+    const columnNodes = byColumn.get(column) ?? [];
+    columnNodes.push(node);
+    byColumn.set(column, columnNodes);
+  });
+
+  Array.from({ length: maxColumn + 1 }, (_, column) => column).forEach((column) => {
+    const columnNodes = byColumn.get(column) ?? [];
+    if (columnNodes.length === 0) {
+      columnX += FLOW_LANE_STEP_X + FLOW_COLUMN_GAP;
+      return;
+    }
+
+    const lanes = Math.max(1, Math.ceil(columnNodes.length / FLOW_STAGE_ROWS));
+    columnNodes
+      .sort(
+        (left, right) =>
+          flowNodeOrder(left) - flowNodeOrder(right) ||
+          left.data.repo.localeCompare(right.data.repo),
+      )
+      .forEach((node, index) => {
+        const lane = Math.floor(index / FLOW_STAGE_ROWS);
+        const row = index % FLOW_STAGE_ROWS;
+        positionedNodes.push({
+          ...node,
+          position: {
+            x: columnX + lane * FLOW_LANE_STEP_X,
+            y: FLOW_START_Y + row * FLOW_NODE_STEP_Y,
+          },
+          zIndex: 2,
+        });
+      });
+
+    columnX += lanes * FLOW_LANE_STEP_X + FLOW_COLUMN_GAP;
+  });
+
+  return {
+    nodes: positionedNodes,
+    edges: flowEdges,
+  };
 }
 
 async function readSnapshot(): Promise<WhereAmISnapshot> {
@@ -1098,6 +1278,167 @@ function ChangeSummary({ change }: { change?: ChangeDetail }) {
   );
 }
 
+function EvidenceList({
+  items,
+  fallback,
+}: {
+  items?: EvidenceItem[];
+  fallback?: string;
+}) {
+  const visibleItems = (items ?? []).filter(
+    (item) => item.file || item.text,
+  );
+
+  if (visibleItems.length === 0 && !fallback) return null;
+
+  return (
+    <section className="evidence-card">
+      <div className="change-card-header">
+        <h4>근거</h4>
+        <span>{visibleItems.length > 0 ? "static scan" : "summary"}</span>
+      </div>
+      {visibleItems.length > 0 ? (
+        <ul className="evidence-list">
+          {visibleItems.map((item, index) => (
+            <li key={`${item.file}-${item.line}-${index}`}>
+              <div>
+                <strong>
+                  {item.file}
+                  {item.line > 0 ? `:${item.line}` : ""}
+                </strong>
+                <span>{item.source} · {Math.round(item.confidence * 100)}%</span>
+              </div>
+              {item.text ? <code>{item.text}</code> : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>{fallback}</p>
+      )}
+    </section>
+  );
+}
+
+function EdgeSummary({ edge }: { edge: Edge }) {
+  const evidenceItems = normalizeEvidenceItems(edge.data?.evidenceItems);
+  const confidence =
+    typeof edge.data?.confidence === "number"
+      ? Math.round(edge.data.confidence * 100)
+      : null;
+
+  return (
+    <>
+      <div className="section-title-row">
+        <h2>선택 선</h2>
+        <span className="detail-status detail-status--changed">
+          {confidence !== null ? `${confidence}%` : "연결"}
+        </span>
+      </div>
+      <h3>{String(edge.label ?? "연결")}</h3>
+      <p>{String(edge.data?.kind ?? "static relation")}</p>
+      <dl className="detail-list">
+        <div>
+          <dt>source</dt>
+          <dd>{edge.source}</dd>
+        </div>
+        <div>
+          <dt>target</dt>
+          <dd>{edge.target}</dd>
+        </div>
+        <div>
+          <dt>근거</dt>
+          <dd>{String(edge.data?.evidence ?? "연결 규칙")}</dd>
+        </div>
+      </dl>
+      <EvidenceList
+        fallback={String(edge.data?.evidence ?? "연결 규칙으로 생성된 선입니다.")}
+        items={evidenceItems}
+      />
+    </>
+  );
+}
+
+function StructureOverview({
+  scenarioLabel,
+  repoCount,
+  selectedRepoCount,
+  featureCount,
+  changedCount,
+  riskCount,
+  edgeCount,
+  focusLabel,
+  evidenceCount,
+}: {
+  scenarioLabel: string;
+  repoCount: number;
+  selectedRepoCount: number;
+  featureCount: number;
+  changedCount: number;
+  riskCount: number;
+  edgeCount: number;
+  focusLabel: string;
+  evidenceCount: number;
+}) {
+  const steps = [
+    {
+      label: "범위",
+      value:
+        selectedRepoCount > 0 && selectedRepoCount !== repoCount
+          ? `${selectedRepoCount}/${repoCount} repo`
+          : `${repoCount} repo`,
+      detail: scenarioLabel,
+      icon: Boxes,
+    },
+    {
+      label: "변경",
+      value: `${featureCount} 기능`,
+      detail: `영향 ${changedCount} · 확인 ${riskCount}`,
+      icon: FileDiff,
+    },
+    {
+      label: "진입점",
+      value: "API / UI",
+      detail: "route · wrapper",
+      icon: Route,
+    },
+    {
+      label: "처리",
+      value: `${edgeCount} 연결`,
+      detail: "handler · function",
+      icon: ServerCog,
+    },
+    {
+      label: "근거",
+      value: evidenceCount > 0 ? `${evidenceCount} lines` : "summary",
+      detail: focusLabel,
+      icon: Code2,
+    },
+  ];
+
+  return (
+    <section className="structure-overview" aria-label="시스템 구조 요약">
+      {steps.map((step, index) => {
+        const Icon = step.icon;
+
+        return (
+          <div className="structure-step" key={step.label}>
+            <div className="structure-step-head">
+              <span>{index + 1}</span>
+              <Icon size={16} aria-hidden="true" />
+              <strong>{step.label}</strong>
+              {index < steps.length - 1 ? (
+                <ArrowRight size={14} aria-hidden="true" />
+              ) : null}
+            </div>
+            <p>{step.value}</p>
+            <small>{step.detail}</small>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
 function FeatureChangeList({ features }: { features: FeatureChange[] }) {
   const actionLabel: Record<FeatureChangeAction, string> = {
     added: "추가",
@@ -1214,14 +1555,25 @@ function TeamUpdateDetail({
 function ScanHistoryPanel({
   delta,
   history,
+  repos,
+  selectedRepoName,
+  prQuery,
+  onChangePrQuery,
+  onSelectRepo,
   onSelectEvent,
 }: {
   delta?: ScanDelta;
   history: ScanHistoryEvent[];
+  repos: RepoSummary[];
+  selectedRepoName: string | null;
+  prQuery: string;
+  onChangePrQuery: (value: string) => void;
+  onSelectRepo: (repoName: string | null) => void;
   onSelectEvent?: (event: ScanHistoryEvent) => void;
 }) {
   const currentEvents = delta?.events ?? [];
   const currentIds = new Set(currentEvents.map((event) => event.id));
+  const hasPrFilter = Boolean(selectedRepoName || prQuery.trim());
   const previousEvents = history
     .filter((event) => !currentIds.has(event.id))
     .slice(0, 4);
@@ -1232,6 +1584,41 @@ function ScanHistoryPanel({
         <h2>스캔 변화</h2>
         <span className="muted-count">{delta?.summary ?? "대기"}</span>
       </div>
+      {repos.length > 0 ? (
+        <div className="scan-filter-row" aria-label="PR 조회 필터">
+          <div className="scan-repo-toggle" aria-label="repo별 최근 PR">
+            <button
+              className={!selectedRepoName ? "is-active" : ""}
+              onClick={() => onSelectRepo(null)}
+              type="button"
+            >
+              전체
+            </button>
+            {repos.map((repo) => (
+              <button
+                className={selectedRepoName === repo.name ? "is-active" : ""}
+                key={repo.path}
+                onClick={() =>
+                  onSelectRepo(selectedRepoName === repo.name ? null : repo.name)
+                }
+                title={repo.name}
+                type="button"
+              >
+                {compactRepoName(repo.name)}
+              </button>
+            ))}
+          </div>
+          <label className="scan-pr-search">
+            <Search size={14} />
+            <input
+              inputMode="numeric"
+              onChange={(event) => onChangePrQuery(event.target.value)}
+              placeholder="PR 번호"
+              value={prQuery}
+            />
+          </label>
+        </div>
+      ) : null}
       <div className="history-list">
         {(currentEvents.length > 0
           ? currentEvents
@@ -1242,8 +1629,10 @@ function ScanHistoryPanel({
                 type: "none" as const,
                 scenarioId: "all",
                 scenarioLabel: "전체",
-                title: "스캔 기록 없음",
-                detail: "갱신을 누르면 직전 스냅샷과 비교합니다.",
+                title: hasPrFilter ? "PR 결과 없음" : "스캔 기록 없음",
+                detail: hasPrFilter
+                  ? "repo 또는 PR 번호 조건을 바꾸면 다시 조회됩니다."
+                  : "갱신을 누르면 직전 스냅샷과 비교합니다.",
                 items: [],
               },
             ]
@@ -1410,10 +1799,13 @@ export function WhereAmIClient() {
   const [query, setQuery] = useState("");
   const [graphMode, setGraphMode] = useState<GraphMode>("focus");
   const [selectedRepoNames, setSelectedRepoNames] = useState<string[]>([]);
+  const [scanRepoName, setScanRepoName] = useState<string | null>(null);
+  const [scanPrQuery, setScanPrQuery] = useState("");
   const [changedOnly, setChangedOnly] = useState(false);
   const [riskOnly, setRiskOnly] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState("ui-dashboard");
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectionFocusActive, setSelectionFocusActive] = useState(false);
   const [selectedTeamUpdateKey, setSelectedTeamUpdateKey] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<WhereAmISnapshot | null>(null);
   const [snapshotState, setSnapshotState] = useState<SnapshotState>("loading");
@@ -1421,7 +1813,7 @@ export function WhereAmIClient() {
   const [refreshNote, setRefreshNote] = useState("");
   const [leftPanelWidth, setLeftPanelWidth] = useState(286);
   const [leftPanelDraftWidth, setLeftPanelDraftWidth] = useState<number | null>(null);
-  const [detailPanelHeight, setDetailPanelHeight] = useState(520);
+  const [detailPanelHeight, setDetailPanelHeight] = useState(420);
 
   useEffect(() => {
     let alive = true;
@@ -1527,6 +1919,7 @@ export function WhereAmIClient() {
         node.data.summary,
         node.data.impact,
         node.data.evidence,
+        ...(node.data.evidenceItems ?? []).map((item) => item.text),
         ...node.data.badges,
       ]
         .join(" ")
@@ -1537,32 +1930,43 @@ export function WhereAmIClient() {
       const matchesRepo =
         !hasRepoFilter || selectedRepoSet.has(node.data.repo);
       const matchesTeamUpdate =
-        !selectedTeamUpdate ||
-        (node.data.kind === "repo"
-          ? node.data.repo === selectedTeamUpdate.repo.name
-          : selectedTeamFileSet.has(teamUpdateFileKey(node.data.repo, node.data.path)));
+        !selectedTeamUpdate || node.data.repo === selectedTeamUpdate.repo.name;
       const matchesMode =
-        graphMode === "focus" ||
-        graphMode === "all" ||
-        (graphMode === "api" &&
-          (node.data.kind === "repo" ||
+        hasQuery ||
+        (graphMode === "focus" &&
+          !node.id.startsWith("file:") &&
+          (node.data.kind === "ui" ||
             node.data.kind === "wrapper" ||
             node.data.kind === "api" ||
-            node.data.kind === "engine")) ||
+            node.data.kind === "engine" ||
+            node.data.kind === "handler" ||
+            node.data.kind === "function" ||
+            node.data.kind === "external" ||
+            node.data.kind === "error" ||
+            node.data.kind === "db")) ||
+        graphMode === "all" ||
+        (graphMode === "api" &&
+          (node.data.kind === "ui" ||
+            node.data.kind === "wrapper" ||
+            node.data.kind === "api" ||
+            node.data.kind === "engine" ||
+            node.data.kind === "handler" ||
+            node.data.kind === "function" ||
+            node.data.kind === "external")) ||
         (graphMode === "verify" &&
-          (node.data.kind === "repo" ||
-            node.data.kind === "docs" ||
+          (node.data.kind === "docs" ||
             node.data.kind === "test" ||
+            node.data.kind === "api" ||
+            node.data.kind === "error" ||
             node.data.status === "risk"));
       const matchesChanged =
-        node.data.kind === "repo" ||
         !changedOnly ||
         node.data.status === "active" ||
         node.data.status === "added" ||
         node.data.status === "changed" ||
         node.data.status === "risk";
       const matchesRisk =
-        node.data.kind === "repo" || !riskOnly || node.data.status === "risk";
+        !riskOnly || node.data.status === "risk";
 
       if (
         matchesRepo &&
@@ -1589,7 +1993,21 @@ export function WhereAmIClient() {
       });
     }
 
-    const matchedNodes = sourceNodes.filter((node) => directlyMatched.has(node.id));
+    let matchedNodes = sourceNodes.filter(
+      (node) => directlyMatched.has(node.id) && node.data.kind !== "repo",
+    );
+    if (matchedNodes.length === 0 && graphMode === "focus" && !hasQuery) {
+      matchedNodes = sourceNodes
+        .filter(
+          (node) =>
+            node.data.kind !== "repo" &&
+            (node.data.status === "active" ||
+              node.data.status === "added" ||
+              node.data.status === "changed" ||
+              node.data.status === "risk"),
+        )
+        .slice(0, 12);
+    }
     const nodes = selectedTeamUpdate
       ? compactTeamGraphNodes(matchedNodes)
       : matchedNodes;
@@ -1609,16 +2027,19 @@ export function WhereAmIClient() {
     riskOnly,
     scenario,
     selectedRepoSet,
-    selectedTeamFileSet,
     selectedTeamUpdate,
   ]);
+  const displayGraph = useMemo(
+    () => layoutApiFlowGraph(filteredGraph.nodes, filteredGraph.edges),
+    [filteredGraph],
+  );
 
   const allScenarioNodes = scenario.allNodes ?? scenario.nodes;
   const hiddenCount = Math.max(0, allScenarioNodes.length - scenario.nodes.length);
   const graphModeLabel = {
-    focus: "핵심",
+    focus: "흐름",
     all: "전체",
-    api: "전체 API",
+    api: "API",
     verify: "검증",
   }[graphMode];
 
@@ -1656,65 +2077,145 @@ export function WhereAmIClient() {
     selectedTeamFileSet,
     selectedTeamUpdate,
   ]);
-  const filteredFiles = useMemo(() => {
-    if (selectedTeamUpdate) {
-      return (selectedTeamUpdate.update.files ?? []).map((file) =>
-        teamUpdateFileKey(selectedTeamUpdate.repo.name, file),
-      );
+  const filtered = useMemo(() => {
+    const highlightedNodeIds = new Set<string>();
+    const highlightedEdgeIds = new Set<string>();
+    const prChangedNodeIds = new Set(
+      selectedTeamUpdate
+        ? displayGraph.nodes
+            .filter((node) => matchesTeamUpdateFile(node, selectedTeamFileSet))
+            .map((node) => node.id)
+        : [],
+    );
+    const selectedRepoNodeIds = new Set(
+      hasRepoFilter
+        ? displayGraph.nodes
+            .filter((node) => selectedRepoSet.has(node.data.repo))
+            .map((node) => node.id)
+        : [],
+    );
+
+    if (selectionFocusActive && selectedEdge) {
+      highlightedEdgeIds.add(selectedEdge.id);
+      highlightedNodeIds.add(selectedEdge.source);
+      highlightedNodeIds.add(selectedEdge.target);
+    } else if (
+      selectionFocusActive &&
+      selectedTeamUpdate &&
+      prChangedNodeIds.size > 0
+    ) {
+      prChangedNodeIds.forEach((nodeId) => highlightedNodeIds.add(nodeId));
+      displayGraph.edges.forEach((edge) => {
+        if (!prChangedNodeIds.has(edge.source) && !prChangedNodeIds.has(edge.target)) {
+          return;
+        }
+        highlightedEdgeIds.add(edge.id);
+        highlightedNodeIds.add(edge.source);
+        highlightedNodeIds.add(edge.target);
+      });
+    } else if (selectionFocusActive && selectedRepoNodeIds.size > 0) {
+      selectedRepoNodeIds.forEach((nodeId) => highlightedNodeIds.add(nodeId));
+      displayGraph.edges.forEach((edge) => {
+        if (
+          !selectedRepoNodeIds.has(edge.source) &&
+          !selectedRepoNodeIds.has(edge.target)
+        ) {
+          return;
+        }
+        highlightedEdgeIds.add(edge.id);
+        highlightedNodeIds.add(edge.source);
+        highlightedNodeIds.add(edge.target);
+      });
+    } else if (selectionFocusActive && selectedNode) {
+      highlightedNodeIds.add(selectedNode.id);
+      displayGraph.edges.forEach((edge) => {
+        if (edge.source !== selectedNode.id && edge.target !== selectedNode.id) {
+          return;
+        }
+        highlightedEdgeIds.add(edge.id);
+        highlightedNodeIds.add(edge.source);
+        highlightedNodeIds.add(edge.target);
+      });
     }
 
-    if (!hasRepoFilter) return scenario.files;
+    const hasFocus = selectionFocusActive && highlightedNodeIds.size > 0;
 
-    return scenario.files.filter((file) =>
-      selectedRepoNames.some((repoName) => file.startsWith(`${repoName}/`)),
-    );
-  }, [hasRepoFilter, scenario.files, selectedRepoNames, selectedTeamUpdate]);
-  const filtered = useMemo(
-    () => ({
-      nodes: filteredGraph.nodes.map((node) => ({
-        ...node,
-        selected: node.id === selectedNode.id,
-      })),
-      edges: filteredGraph.edges.map((edge) => {
-        if (!selectedEdgeId || !selectedEdge) return edge;
-
-        const isSelectedEdge = edge.id === selectedEdgeId;
-
+    return {
+      nodes: displayGraph.nodes.map((node) => {
+        const isHighlighted = highlightedNodeIds.has(node.id);
+        const isPrChanged = prChangedNodeIds.has(node.id);
         return {
-          ...edge,
-          animated: isSelectedEdge ? edge.animated : false,
-          selected: isSelectedEdge,
+          ...node,
+          selected: node.id === selectedNode.id,
           className: [
-            edge.className,
-            isSelectedEdge ? "is-selected-edge" : "is-muted-edge",
+            node.className,
+            isPrChanged ? "is-pr-node" : "",
+            hasFocus && isHighlighted ? "is-focus-node" : "",
+            hasFocus && !isHighlighted ? "is-dimmed-node" : "",
           ]
             .filter(Boolean)
             .join(" "),
+        };
+      }),
+      edges: displayGraph.edges.map((edge) => {
+        if (!hasFocus) return edge;
+
+        const isSelectedEdge = edge.id === selectedEdgeId;
+        const isHighlighted = highlightedEdgeIds.has(edge.id);
+
+        return {
+          ...edge,
+          animated: false,
+          selected: isSelectedEdge,
+          className: [
+            edge.className,
+            isSelectedEdge
+              ? "is-selected-edge"
+              : isHighlighted
+                ? "is-highlight-edge"
+                : "is-muted-edge",
+          ]
+            .filter(Boolean)
+            .join(" "),
+          style: {
+            ...edge.style,
+            strokeOpacity: isHighlighted ? 0.96 : 0.1,
+            strokeWidth: isSelectedEdge ? 6 : isHighlighted ? 4 : 1.5,
+          },
           labelStyle: {
             ...edge.labelStyle,
-            fill: isSelectedEdge ? "#020617" : "#64748b",
-            fontWeight: isSelectedEdge ? 900 : edge.labelStyle?.fontWeight,
+            fill: isHighlighted ? "#020617" : "#64748b",
+            fontWeight: isHighlighted ? 900 : edge.labelStyle?.fontWeight,
           },
           labelBgStyle: {
             ...edge.labelBgStyle,
-            fillOpacity: isSelectedEdge ? 1 : 0.34,
+            fillOpacity: isHighlighted ? 1 : 0.24,
           },
         };
       }),
-    }),
-    [filteredGraph, selectedEdge, selectedEdgeId, selectedNode.id],
-  );
+    };
+  }, [
+    displayGraph,
+    hasRepoFilter,
+    selectedEdge,
+    selectedEdgeId,
+    selectedNode,
+    selectedRepoSet,
+    selectedTeamFileSet,
+    selectedTeamUpdate,
+    selectionFocusActive,
+  ]);
   const scanDelta = normalizeScanDelta(snapshot?.scanDelta);
   const scanHistory = normalizeHistoryEvents(snapshot?.history);
   const visibleScanDelta = useMemo(
     () =>
       buildTeamUpdateEvents(
         snapshot?.repos ?? [],
-        selectedRepoNames,
-        selectedTeamUpdate,
         scanDelta,
+        scanRepoName,
+        scanPrQuery,
       ),
-    [scanDelta, selectedRepoNames, selectedTeamUpdate, snapshot?.repos],
+    [scanDelta, scanPrQuery, scanRepoName, snapshot?.repos],
   );
   const commitScope = useMemo(
     () =>
@@ -1741,28 +2242,35 @@ export function WhereAmIClient() {
       ),
     [filteredGraph.nodes],
   );
+  const selectedEvidenceCount = selectedEdge
+    ? normalizeEvidenceItems(selectedEdge.data?.evidenceItems).length
+    : selectedNode.data.evidenceItems?.length ?? 0;
+  const visibleRepoCount = useMemo(
+    () =>
+      snapshot?.repos?.length ??
+      new Set(filteredGraph.nodes.map((node) => node.data.repo)).size,
+    [filteredGraph.nodes, snapshot?.repos],
+  );
+  const selectedStructureRepoCount = visibleRepoCount;
+  const structureFocusLabel = selectedEdge
+    ? String(selectedEdge.label ?? "연결")
+    : selectedNode.data.title;
 
   function selectScenario(nextScenarioId: ScenarioId) {
     const nextScenario = availableScenarios.find((item) => item.id === nextScenarioId);
     setScenarioId(nextScenarioId);
     setSelectedEdgeId(null);
+    setSelectionFocusActive(false);
     setSelectedTeamUpdateKey(null);
     setSelectedNodeId(nextScenario?.focusNodeId ?? "");
   }
 
-  function findRepoNodeId(repoName: string) {
+  function findRepoFlowNodeId(repoName: string, targetScenario = scenario) {
     return (
-      (scenario.allNodes ?? scenario.nodes).find(
-        (node) => node.data.kind === "repo" && node.data.repo === repoName,
+      (targetScenario.allNodes ?? targetScenario.nodes).find(
+        (node) => node.data.kind !== "repo" && node.data.repo === repoName,
       )?.id ?? ""
     );
-  }
-
-  function clearRepoFilter() {
-    setSelectedRepoNames([]);
-    setSelectedEdgeId(null);
-    setSelectedTeamUpdateKey(null);
-    setSelectedNodeId(scenario.focusNodeId);
   }
 
   function selectRepoForMap(repo: RepoSummary) {
@@ -1777,6 +2285,7 @@ export function WhereAmIClient() {
     setSelectedRepoNames(nextSelectedRepoNames);
     setSelectedTeamUpdateKey(null);
     setSelectedEdgeId(null);
+    setSelectionFocusActive(nextSelectedRepoNames.length > 0);
     setGraphMode("all");
     setChangedOnly(false);
     setRiskOnly(false);
@@ -1784,28 +2293,37 @@ export function WhereAmIClient() {
     setSelectedNodeId(
       nextSelectedRepoNames.length === 0
         ? teamScenario.focusNodeId
-        : `repo:${alreadySelected ? nextSelectedRepoNames[0] : repo.name}`,
+        : findRepoFlowNodeId(
+            alreadySelected ? nextSelectedRepoNames[0] : repo.name,
+            teamScenario,
+          ) || teamScenario.focusNodeId,
     );
   }
 
   function selectScanEvent(event: ScanHistoryEvent) {
     if (!event.repoName || !event.updateKey) return;
     setScenarioId("team-briefing");
-    setSelectedRepoNames([event.repoName]);
+    setSelectedRepoNames([]);
     setSelectedTeamUpdateKey(event.updateKey);
     setSelectedEdgeId(null);
+    setSelectionFocusActive(true);
     setGraphMode("all");
     setChangedOnly(false);
     setRiskOnly(false);
     setQuery("");
-    setSelectedNodeId(`repo:${event.repoName}`);
+    const teamScenario =
+      availableScenarios.find((item) => item.id === "team-briefing") ?? scenario;
+    setSelectedNodeId(
+      findRepoFlowNodeId(event.repoName, teamScenario) || teamScenario.focusNodeId,
+    );
   }
 
   function clearTeamUpdateFilter() {
     setSelectedTeamUpdateKey(null);
+    setSelectionFocusActive(false);
     setSelectedNodeId(
       selectedRepoNames.length === 1
-        ? findRepoNodeId(selectedRepoNames[0]) || scenario.focusNodeId
+        ? findRepoFlowNodeId(selectedRepoNames[0]) || scenario.focusNodeId
         : scenario.focusNodeId,
     );
   }
@@ -1965,17 +2483,7 @@ export function WhereAmIClient() {
             <section className="panel-section">
               <div className="section-title-row">
                 <h2>연결 repo</h2>
-                {hasRepoFilter ? (
-                  <button
-                    className="clear-filter-button"
-                    onClick={clearRepoFilter}
-                    type="button"
-                  >
-                    전체
-                  </button>
-                ) : (
-                  <span className="muted-count">전체</span>
-                )}
+                <span className="muted-count">조회</span>
               </div>
               <div className="repo-list">
                 {snapshot.repos.map((repo) => {
@@ -1984,7 +2492,7 @@ export function WhereAmIClient() {
 
                   return (
                     <article
-                      aria-label={`${repo.name} 서비스맵 선택`}
+                      aria-label={`${repo.name} API와 워크플로우 조회`}
                       aria-pressed={isSelected}
                       className={`repo-item repo-item--selectable ${
                         isSelected ? "is-selected" : ""
@@ -2030,16 +2538,6 @@ export function WhereAmIClient() {
             </div>
           </section>
 
-          <section className="panel-section">
-            <h2>변경 파일</h2>
-            <ul className="file-list">
-              {filteredFiles.length > 0 ? (
-                filteredFiles.map((file) => <li key={file}>{file}</li>)
-              ) : (
-                <li>선택 repo 기준 변경 파일 없음</li>
-              )}
-            </ul>
-          </section>
         </aside>
         <button
           aria-label="좌측 패널 폭 조절"
@@ -2050,7 +2548,7 @@ export function WhereAmIClient() {
           <GripVertical size={16} />
         </button>
 
-        <section className="graph-panel" aria-label="작업 영향 그래프">
+        <section className="graph-panel" aria-label="API 작업 흐름 그래프">
           <div className="graph-toolbar">
             <div>
               <strong>{scenario.label}</strong>
@@ -2078,8 +2576,7 @@ export function WhereAmIClient() {
               ) : null}
               {hiddenCount > 0 &&
               graphMode === "focus" &&
-              !query.trim() &&
-              !hasRepoFilter ? (
+              !query.trim() ? (
                 <span>숨김 {hiddenCount}</span>
               ) : null}
             </div>
@@ -2101,9 +2598,9 @@ export function WhereAmIClient() {
           <div className="graph-filter-bar" aria-label="그래프 필터">
             <div className="view-toggle" aria-label="그래프 보기 범위">
               {[
-                ["focus", "핵심"],
+                ["focus", "흐름"],
                 ["all", "전체"],
-                ["api", "전체 API"],
+                ["api", "API"],
                 ["verify", "검증"],
               ].map(([mode, label]) => (
                 <button
@@ -2141,10 +2638,23 @@ export function WhereAmIClient() {
               확인 필요만
             </label>
           </div>
+          <StructureOverview
+            changedCount={
+              statusCounts.active + statusCounts.added + statusCounts.changed
+            }
+            edgeCount={filtered.edges.length}
+            evidenceCount={selectedEvidenceCount}
+            featureCount={filteredFeatureChanges.length}
+            focusLabel={structureFocusLabel}
+            repoCount={visibleRepoCount}
+            riskCount={statusCounts.risk}
+            scenarioLabel={scenario.label}
+            selectedRepoCount={selectedStructureRepoCount}
+          />
 
           <ReactFlowProvider>
             <ReactFlow
-              className={`flow-stage ${selectedEdge ? "has-selected-edge" : ""}`}
+              className={`flow-stage ${selectionFocusActive ? "has-selection-focus" : ""}`}
               colorMode="light"
               edges={filtered.edges}
               fitView
@@ -2157,12 +2667,17 @@ export function WhereAmIClient() {
               onEdgeClick={(event, edge) => {
                 event.stopPropagation();
                 setSelectedEdgeId(edge.id);
+                setSelectionFocusActive(true);
               }}
               onNodeClick={(_, node) => {
                 setSelectedEdgeId(null);
                 setSelectedNodeId(node.id);
+                setSelectionFocusActive(true);
               }}
-              onPaneClick={() => setSelectedEdgeId(null)}
+              onPaneClick={() => {
+                setSelectedEdgeId(null);
+                setSelectionFocusActive(false);
+              }}
               panOnScroll
               proOptions={{ hideAttribution: true }}
             >
@@ -2191,8 +2706,13 @@ export function WhereAmIClient() {
           </button>
           <ScanHistoryPanel
             delta={visibleScanDelta}
-            history={selectedRepoNames.length > 0 || selectedTeamUpdate ? [] : scanHistory}
+            history={selectedTeamUpdate ? [] : scanHistory}
+            onChangePrQuery={setScanPrQuery}
+            onSelectRepo={setScanRepoName}
             onSelectEvent={selectScanEvent}
+            prQuery={scanPrQuery}
+            repos={snapshot?.repos ?? []}
+            selectedRepoName={scanRepoName}
           />
           {selectedTeamUpdate ? (
             <TeamUpdateDetail
@@ -2204,7 +2724,9 @@ export function WhereAmIClient() {
           )}
 
           <section className="panel-section selected-section">
-            {selectedTeamUpdate ? (
+            {selectedEdge ? (
+              <EdgeSummary edge={selectedEdge} />
+            ) : selectedTeamUpdate ? (
               <>
                 <div className="section-title-row">
                   <h2>선택 지점</h2>
@@ -2258,6 +2780,10 @@ export function WhereAmIClient() {
                     <dd>{selectedNode.data.evidence}</dd>
                   </div>
                 </dl>
+                <EvidenceList
+                  fallback={selectedNode.data.evidence}
+                  items={selectedNode.data.evidenceItems}
+                />
                 <ChangeSummary change={selectedNode.data.change} />
               </>
             )}

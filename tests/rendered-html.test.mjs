@@ -79,15 +79,34 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(client, /PR 변경/);
   assert.match(client, /compactTeamGraphNodes/);
   assert.match(client, /buildTeamUpdateEvents/);
+  assert.match(client, /EvidenceList/);
+  assert.match(client, /EdgeSummary/);
+  assert.match(client, /StructureOverview/);
+  assert.match(client, /FLOW_STAGE_ROWS/);
+  assert.match(client, /selectedStructureRepoCount/);
+  assert.match(client, /selectionFocusActive/);
+  assert.match(client, /is-focus-node/);
+  assert.match(client, /selectedRepoNodeIds/);
+  assert.match(client, /scanRepoName/);
+  assert.match(client, /scanPrQuery/);
+  assert.match(client, /scan-repo-toggle/);
+  assert.match(client, /PR 번호/);
+  assert.match(client, /API와 워크플로우 조회/);
+  assert.match(client, /setSelectedRepoNames\(\[\]\);/);
+  assert.doesNotMatch(client, /<h2>변경 파일<\/h2>/);
   assert.doesNotMatch(client, /repo-main/);
   assert.doesNotMatch(client, /team-pr-chip/);
   assert.match(packageJson, /"name": "where-am-i"/);
+  assert.doesNotMatch(packageJson, /"prebuild"/);
   assert.match(packageJson, /"scan": "node scripts\/scan-repos\.mjs"/);
   assert.match(packageJson, /"scan:server": "node scripts\/scan-server\.mjs"/);
   assert.match(scanServer, /text\/event-stream/);
   assert.match(scanServer, /watchDebounceMs/);
   assert.match(scanServer, /watch\(/);
   assert.match(scanRepos, /extractOpenApiRoutes/);
+  assert.match(scanRepos, /extractCodeTopology/);
+  assert.match(scanRepos, /codeFacts/);
+  assert.match(scanRepos, /evidenceItems/);
   assert.match(scanRepos, /apiNodesPerScenario/);
   assert.match(scanRepos, /isApiCatalogFile/);
   assert.match(scanRepos, /repoRoots:\s*\[\]/);
@@ -97,4 +116,11 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.doesNotMatch(layout, /codex-preview|_sites-preview|themeColor|\bViewport\b/);
 
   await assert.rejects(access(new URL("app/_sites-preview", templateRoot)));
+});
+
+test("production build excludes the local repository snapshot", async () => {
+  await assert.rejects(
+    access(new URL("../dist/client/whereami-snapshot.json", import.meta.url)),
+    { code: "ENOENT" },
+  );
 });
