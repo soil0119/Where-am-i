@@ -26,19 +26,22 @@ export function sites(): Plugin {
     },
     async closeBundle() {
       const outputDirectory = resolve(root, "dist", ".openai");
+      const localSnapshot = resolve(
+        root,
+        "dist",
+        "client",
+        "whereami-snapshot.json",
+      );
       const hostingConfig = resolve(root, ".openai", "hosting.json");
-      const drizzleSource = resolve(root, "drizzle");
 
+      // Local snapshots can contain absolute paths, commit metadata, and code
+      // evidence. Never include them in a production bundle.
+      await rm(localSnapshot, { force: true });
       await rm(outputDirectory, { recursive: true, force: true });
       await mkdir(outputDirectory, { recursive: true });
 
       if (await exists(hostingConfig)) {
         await cp(hostingConfig, resolve(outputDirectory, "hosting.json"));
-      }
-      if (await exists(drizzleSource)) {
-        await cp(drizzleSource, resolve(outputDirectory, "drizzle"), {
-          recursive: true,
-        });
       }
     },
   };

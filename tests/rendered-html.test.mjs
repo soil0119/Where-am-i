@@ -97,6 +97,7 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.doesNotMatch(client, /repo-main/);
   assert.doesNotMatch(client, /team-pr-chip/);
   assert.match(packageJson, /"name": "where-am-i"/);
+  assert.doesNotMatch(packageJson, /"prebuild"/);
   assert.match(packageJson, /"scan": "node scripts\/scan-repos\.mjs"/);
   assert.match(packageJson, /"scan:server": "node scripts\/scan-server\.mjs"/);
   assert.match(scanServer, /text\/event-stream/);
@@ -115,4 +116,11 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.doesNotMatch(layout, /codex-preview|_sites-preview|themeColor|\bViewport\b/);
 
   await assert.rejects(access(new URL("app/_sites-preview", templateRoot)));
+});
+
+test("production build excludes the local repository snapshot", async () => {
+  await assert.rejects(
+    access(new URL("../dist/client/whereami-snapshot.json", import.meta.url)),
+    { code: "ENOENT" },
+  );
 });
