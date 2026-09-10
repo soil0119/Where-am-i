@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { boundedInteger } from "./config-values.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const configPath = process.env.WHEREAMI_CONFIG_PATH
@@ -32,6 +33,12 @@ const defaultConfig = {
 };
 
 const config = readConfig();
+const watchIntervalMs = boundedInteger(
+  config.watchIntervalMs,
+  defaultConfig.watchIntervalMs,
+  { min: 1_000, max: 24 * 60 * 60 * 1_000 },
+);
+const schedulerTickMs = 1_000;
 const fetchedRepos = new Set();
 const ignoredCallSymbols = new Set([
   "if",
@@ -61,11 +68,16 @@ const ignoredCallSymbols = new Set([
 await runOnce();
 
 if (watch) {
+  let nextScanAt = Date.now() + watchIntervalMs;
   setInterval(() => {
+    const now = Date.now();
+    if (now < nextScanAt) return;
+    nextScanAt = now + watchIntervalMs;
+
     runOnce().catch((error) => {
       if (!quiet) console.error(`[whereami] scan failed: ${error.message}`);
     });
-  }, config.watchIntervalMs);
+  }, schedulerTickMs);
 }
 
 function readConfig() {
