@@ -1,39 +1,66 @@
 # Contributing to Where am I
 
-버그 제보, 문서 개선, extractor 확장과 사용성 피드백을 환영합니다.
+[English](./CONTRIBUTING.md) | [한국어](./CONTRIBUTING.ko.md)
 
-## 시작하기
+Thank you for helping improve Where am I. Contributions in English or Korean are welcome, including bug reports, documentation fixes, extractor support, tests, and usability feedback.
 
-1. 큰 변경은 구현 전에 Issue로 문제와 접근 방식을 공유해 주세요.
-2. 저장소를 fork하고 목적이 분명한 branch를 만드세요.
-3. Node.js `>=22.13.0`에서 의존성을 설치하세요.
-4. 변경에 맞는 테스트와 문서를 함께 갱신하세요.
+## Before you start
+
+- Search existing issues and pull requests to avoid duplicate work.
+- For a bug fix, open or reference an issue with reproducible details.
+- For a large feature or architectural change, open an issue before implementation so we can align on scope and approach.
+- Never include private source code, access tokens, internal repository names, or unredacted local paths in issues, logs, screenshots, or fixtures.
+
+Issues labeled [`good first issue`](https://github.com/soil0119/Where-am-i/labels/good%20first%20issue) or [`help wanted`](https://github.com/soil0119/Where-am-i/labels/help%20wanted) are intended for contributors looking for a place to begin.
+
+## Development setup
+
+1. Fork the repository and create a focused branch from `main`.
+2. Install Node.js `>=22.13.0`.
+3. Install dependencies and create a local configuration.
 
 ```bash
-npm install
+npm ci
 cp whereami.config.example.json whereami.config.json
 npm run dev
 ```
 
-## Pull request 전 확인
+On Windows PowerShell, use `Copy-Item whereami.config.example.json whereami.config.json` instead of `cp`.
+
+## Making changes
+
+- Keep each pull request focused on one problem.
+- Add or update tests when behavior changes.
+- Update English and Korean documentation together when shared behavior or setup changes.
+- Match the existing code style and avoid unrelated formatting changes.
+- Do not commit `whereami.config.json`, `public/whereami-snapshot.json`, build output, or secrets.
+
+## Before opening a pull request
+
+Run the same core checks used by CI:
 
 ```bash
 npm run lint
 npm test
 ```
 
-- PR은 한 가지 문제에 집중해 주세요.
-- 동작 변경에는 재현 방법이나 테스트를 포함해 주세요.
-- UI 변경에는 민감정보가 제거된 화면 설명이나 캡처를 포함해 주세요.
-- 생성된 `whereami.config.json`과 `public/whereami-snapshot.json`은 커밋하지 마세요.
+In the pull request:
 
-## 버그 제보
+- Explain what changed and why.
+- Link the related issue with `Closes #<issue-number>` when applicable.
+- Include reproduction or verification steps for behavior changes.
+- For UI changes, include a screenshot or short recording with sensitive data removed.
+- Call out limitations, follow-up work, or compatibility concerns.
 
-가능하면 다음 내용을 포함해 주세요.
+Maintainers may ask for changes before merging. Reviews should focus on the contribution, remain respectful, and follow our [Code of Conduct](./CODE_OF_CONDUCT.md).
 
-- 기대한 동작과 실제 동작
-- 재현 단계
-- Node.js 버전과 운영체제
-- 민감정보를 제거한 오류 메시지
+## Reporting bugs
 
-보안 취약점은 공개 Issue로 제보하지 말고 [SECURITY.md](./SECURITY.md)를 따라 주세요.
+Please include:
+
+- Expected and actual behavior
+- Minimal reproduction steps
+- Node.js version and operating system
+- Sanitized error messages or logs
+
+Do not report security vulnerabilities in a public issue. Follow [SECURITY.md](./SECURITY.md) instead.
