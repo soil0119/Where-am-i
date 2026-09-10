@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { existsSync, readdirSync, readFileSync, watch } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { boundedInteger } from "./config-values.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const configPath = path.join(rootDir, "whereami.config.json");
@@ -15,10 +16,24 @@ const defaultConfig = {
   watchDebounceMs: 1800,
 };
 const config = readConfig();
-const port = Number(process.env.WHEREAMI_SCAN_PORT ?? config.scanServerPort ?? 3010);
-const intervalMs = Number(config.watchIntervalMs ?? 60 * 60 * 1000);
+const port = boundedInteger(
+  process.env.WHEREAMI_SCAN_PORT ?? config.scanServerPort,
+  defaultConfig.scanServerPort,
+  { min: 1, max: 65_535 },
+);
+const intervalMs = boundedInteger(
+  config.watchIntervalMs,
+  defaultConfig.watchIntervalMs,
+  { min: 1_000, max: 24 * 60 * 60 * 1_000 },
+);
 const liveWatch = config.liveWatch !== false;
-const watchDebounceMs = Number(config.watchDebounceMs ?? 1800);
+const watchDebounceMs = boundedInteger(
+  config.watchDebounceMs,
+  defaultConfig.watchDebounceMs,
+  { min: 100, max: 60_000 },
+);
+const schedulerTickMs = 1_000;
+const debounceTickMs = 100;
 const ignoredWatchParts = new Set([
   ".git",
   ".next",
@@ -32,15 +47,21 @@ const ignoredWatchParts = new Set([
 
 let activeScan = null;
 let lastResult = null;
-let watchTimer = null;
+let pendingWatchScan = null;
 const eventClients = new Set();
 const repoWatchers = liveWatch ? startRepoWatchers() : [];
+const watchTimer = liveWatch ? setInterval(flushWatchScan, debounceTickMs) : null;
 
 runScan("startup").catch(() => {});
 
+let nextIntervalScanAt = Date.now() + intervalMs;
 const timer = setInterval(() => {
+  const now = Date.now();
+  if (now < nextIntervalScanAt) return;
+  nextIntervalScanAt = now + intervalMs;
+
   runScan("interval").catch(() => {});
-}, intervalMs);
+}, schedulerTickMs);
 
 const server = createServer(async (request, response) => {
   setCors(response);
@@ -219,12 +240,18 @@ function shouldIgnoreWatchFile(filename) {
 }
 
 function scheduleWatchScan(repoName) {
-  if (watchTimer) clearTimeout(watchTimer);
+  pendingWatchScan = {
+    repoName,
+    dueAt: Date.now() + watchDebounceMs,
+  };
+}
 
-  watchTimer = setTimeout(() => {
-    watchTimer = null;
-    runScan(`watch:${repoName}`).catch(() => {});
-  }, watchDebounceMs);
+function flushWatchScan() {
+  if (!pendingWatchScan || Date.now() < pendingWatchScan.dueAt) return;
+
+  const { repoName } = pendingWatchScan;
+  pendingWatchScan = null;
+  runScan(`watch:${repoName}`).catch(() => {});
 }
 
 function openEventStream(request, response) {
@@ -267,7 +294,7 @@ function sendJson(response, status, payload) {
 
 function shutdown() {
   clearInterval(timer);
-  if (watchTimer) clearTimeout(watchTimer);
+  if (watchTimer) clearInterval(watchTimer);
   repoWatchers.forEach((repoWatcher) => repoWatcher.close());
   eventClients.forEach((client) => client.end());
   server.close(() => process.exit(0));
