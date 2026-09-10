@@ -1,44 +1,48 @@
 # Where am I
 
-여러 저장소를 오가며 코드를 추적하지 않아도, 현재 변경이 파일·API·서비스·DB·테스트 어디까지 영향을 주는지 한 화면에서 확인하는 로컬 우선(local-first) 영향 그래프입니다.
+[English](./README.md) | [한국어](./README.ko.md)
 
-> A local-first impact graph for understanding how code changes flow across files, APIs, services, databases, and tests.
+[![CI](https://github.com/soil0119/Where-am-i/actions/workflows/ci.yml/badge.svg)](https://github.com/soil0119/Where-am-i/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Node.js 22.13+](https://img.shields.io/badge/Node.js-22.13%2B-339933?logo=node.js&logoColor=white)](./package.json)
+
+A local-first impact graph that shows how code changes flow across files, APIs, services, databases, and tests—without making you trace every repository by hand.
 
 > [!IMPORTANT]
-> 현재는 초기 MVP입니다. 분석 결과를 배포·보안·호환성 판단의 유일한 근거로 사용하지 마세요.
+> Where am I is an early MVP. Do not use its analysis as the sole basis for deployment, security, or compatibility decisions.
 
-## 왜 만들었나요?
+## Why Where am I?
 
-멀티 저장소 환경에서는 작은 API 변경도 프론트엔드 wrapper, 백엔드 handler, 내부 서비스, DB schema, 문서와 테스트까지 이어집니다. Where am I는 로컬 Git 저장소에서 근거를 수집하고, 변경과 연결 관계를 클릭 가능한 그래프로 보여줍니다.
+In a multi-repository system, a small API change can affect a frontend wrapper, a backend handler, an internal service, a database schema, documentation, and tests. Where am I collects evidence from local Git repositories and turns those relationships into a clickable impact graph.
 
-## 주요 기능
+## Features
 
-- 현재 작업 diff를 기준으로 영향받는 코드 흐름 표시
-- 팀원 PR과 원격 커밋의 API·schema 변경 브리핑
-- API path, handler, wrapper, OpenAPI 문서와 테스트 연결 확인
-- 여러 저장소의 API catalog 통합 조회
-- 함수, DB, 외부 API, 에러 코드의 파일 경로와 근거 라인 추적
-- 온보딩을 위한 시스템 구조 요약과 repo별 탐색
+- Visualize code paths affected by the current working-tree diff
+- Brief API and schema changes from teammates' pull requests and remote commits
+- Connect API paths, handlers, wrappers, OpenAPI documents, and tests
+- Search a combined API catalog across multiple repositories
+- Trace functions, databases, external APIs, and error codes back to files and evidence lines
+- Explore system summaries and repository-specific structure for onboarding
 
 ```mermaid
 flowchart LR
   A[Git diff / team update] --> B[Local scanner]
   B --> C[Files and functions]
-  B --> D[API and handlers]
-  B --> E[DB / external calls]
+  B --> D[APIs and handlers]
+  B --> E[Databases / external calls]
   C --> F[Interactive impact graph]
   D --> F
   E --> F
 ```
 
-## 빠른 시작
+## Quick start
 
-### 요구 사항
+### Requirements
 
 - Node.js `>=22.13.0`
-- 분석할 로컬 Git 저장소
+- One or more local Git repositories to analyze
 
-### 설치 및 실행
+### Install and run
 
 ```bash
 git clone https://github.com/soil0119/Where-am-i.git
@@ -48,7 +52,13 @@ cp whereami.config.example.json whereami.config.json
 npm run dev
 ```
 
-`whereami.config.json`에서 분석할 workspace 경로와 저장소 이름 조건을 설정하세요.
+On Windows PowerShell, replace the `cp` command with:
+
+```powershell
+Copy-Item whereami.config.example.json whereami.config.json
+```
+
+Set the workspace path and repository-name filter in `whereami.config.json`:
 
 ```json
 {
@@ -60,7 +70,7 @@ npm run dev
 }
 ```
 
-특정 저장소만 직접 지정할 수도 있습니다.
+You can also list repositories explicitly:
 
 ```json
 {
@@ -74,42 +84,56 @@ npm run dev
 }
 ```
 
-전체 설정과 스캔 제한값은 [`whereami.config.example.json`](./whereami.config.example.json)을 참고하세요.
+See [`whereami.config.example.json`](./whereami.config.example.json) for every option and scan limit.
 
-## 명령어
+## Commands
 
-| 명령어 | 설명 |
+| Command | Description |
 | --- | --- |
-| `npm run dev` | UI, 로컬 스캔 서버와 파일 변경 감시를 함께 실행합니다. |
-| `npm run scan` | 저장소를 한 번 스캔합니다. |
-| `npm run scan:watch` | 설정된 주기로 저장소를 다시 스캔합니다. |
-| `npm run scan:server` | 수동 갱신과 실시간 이벤트용 로컬 서버를 실행합니다. |
-| `npm run build` | 로컬 snapshot을 제외한 production bundle을 생성합니다. |
-| `npm test` | production build와 테스트를 실행합니다. |
-| `npm run lint` | 정적 코드 검사를 실행합니다. |
+| `npm run dev` | Run the UI, local scan server, and file watcher together. |
+| `npm run scan` | Scan configured repositories once. |
+| `npm run scan:watch` | Rescan repositories at the configured interval. |
+| `npm run scan:server` | Run the local server for manual refreshes and live events. |
+| `npm run build` | Build a production bundle without the local snapshot. |
+| `npm test` | Run the production build and test suite. |
+| `npm run lint` | Run static analysis. |
 
-## 데이터와 공개 시 주의사항
+## Data and privacy
 
-Where am I는 분석 대상 코드를 로컬에서 읽습니다. 생성되는 `whereami.config.json`과 `public/whereami-snapshot.json`에는 다음 정보가 포함될 수 있습니다.
+Where am I reads the source code in the repositories you configure. The generated `whereami.config.json` and `public/whereami-snapshot.json` may contain:
 
-- 로컬 절대 경로와 저장소 이름
-- branch, commit, PR 제목과 변경 파일
-- 함수명, API path, 코드 근거 라인
+- Absolute local paths and repository names
+- Branches, commits, pull request titles, and changed files
+- Function names, API paths, and source evidence lines
 
-두 파일은 기본적으로 Git에서 제외됩니다. production build도 로컬 snapshot을 결과물에서 제거하고 내장 샘플 데이터로 표시합니다. 그래도 화면을 캡처하거나 결과를 공유하기 전에는 민감한 정보가 없는지 직접 확인하세요.
+Both files are ignored by Git by default. Production builds also remove the local snapshot and display bundled sample data. Even so, review screenshots and exported results for sensitive information before sharing them.
 
-`autoFetch`를 활성화하면 스캔 시 각 저장소의 원격 Git 정보를 가져옵니다. 네트워크 접근을 원하지 않으면 `false`로 설정하거나 `npm run scan -- --no-fetch`를 사용하세요.
+When `autoFetch` is enabled, the scanner fetches remote Git metadata for each repository. Set it to `false`, or run `npm run scan -- --no-fetch`, to avoid network access during a scan.
 
-## 현재 한계
+## Current limitations
 
-- 코드 관계는 정적 패턴 기반으로 추론하므로 동적 호출이나 복잡한 metaprogramming을 놓칠 수 있습니다.
-- 지원 언어와 framework별 extractor 정확도가 아직 균일하지 않습니다.
-- GitHub PR/branch 비교 브리핑과 extractor 정확도 개선은 진행 중입니다.
+- Relationships are inferred from static patterns, so dynamic calls and complex metaprogramming may be missed.
+- Extractor coverage and accuracy vary by language and framework.
+- Pull request and branch comparison briefings, along with extractor accuracy, are still being improved.
 
-## 기여와 보안
+## Contributing
 
-버그 제보와 기능 제안은 [GitHub Issues](https://github.com/soil0119/Where-am-i/issues)를 이용해 주세요. 코드 기여 방법은 [CONTRIBUTING.md](./CONTRIBUTING.md), 취약점 제보 방법은 [SECURITY.md](./SECURITY.md)를 참고하세요.
+Contributions in English or Korean are welcome. Bug reports, documentation fixes, new extractors, and usability feedback are all useful places to start.
 
-## 라이선스
+Before opening a pull request:
 
-[MIT License](./LICENSE)
+```bash
+npm ci
+npm run lint
+npm test
+```
+
+For larger changes, please open an [issue](https://github.com/soil0119/Where-am-i/issues) first so we can align on the problem and approach. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the complete workflow and [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) for community expectations.
+
+## Security
+
+Please do not report vulnerabilities in a public issue. Follow the private reporting instructions in [SECURITY.md](./SECURITY.md).
+
+## License
+
+Where am I is available under the [MIT License](./LICENSE).

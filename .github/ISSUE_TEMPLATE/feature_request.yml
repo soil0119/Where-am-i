@@ -1,25 +1,34 @@
 name: Feature request
-description: 개선 아이디어와 사용 사례를 제안해 주세요.
+description: Suggest an improvement or use case. 개선 아이디어나 사용 사례를 제안해 주세요.
 title: "[Feature] "
 labels:
   - enhancement
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing an idea. English and Korean requests are both welcome.
   - type: textarea
     id: use-case
     attributes:
-      label: 사용 사례
-      description: 어떤 상황에서 어떤 문제가 발생하나요?
+      label: Use case / 사용 사례
+      description: What problem are you trying to solve, and who does it affect?
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: 제안
-      description: 원하는 동작이나 인터페이스를 설명해 주세요.
+      label: Proposed solution / 제안
+      description: Describe the behavior or interface you would like.
     validations:
       required: true
   - type: textarea
     id: alternatives
     attributes:
-      label: 대안
-      description: 현재 사용 중인 우회 방법이나 고려한 대안이 있나요?
+      label: Alternatives / 대안
+      description: Describe workarounds or other approaches you considered.
+  - type: textarea
+    id: contribution
+    attributes:
+      label: Contribution / 기여 의사
+      description: Let us know if you would like to help implement this change.

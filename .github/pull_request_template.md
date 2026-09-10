@@ -1,14 +1,18 @@
-## 변경 내용
+## What changed? / 무엇을 변경했나요?
 
-- 무엇을, 왜 변경했나요?
+<!-- Explain what changed and why. 무엇을 왜 변경했는지 설명해 주세요. -->
 
-## 검증
+## How was it verified? / 어떻게 검증했나요?
 
 - [ ] `npm run lint`
 - [ ] `npm test`
-- [ ] 생성된 config 또는 snapshot이 포함되지 않았습니다.
-- [ ] UI 캡처와 로그에서 민감정보를 제거했습니다.
+- [ ] No generated config, snapshot, build output, or secrets are included.
+- [ ] Screenshots and logs have been checked for sensitive information.
 
-## 관련 Issue
+<!-- Add manual verification steps and sanitized screenshots for UI changes. UI 변경은 수동 검증 방법과 민감정보를 제거한 화면을 추가해 주세요. -->
+
+## Related issue / 관련 Issue
+
+<!-- Use "Closes #123" when this PR resolves an issue. -->
 
 Closes #
