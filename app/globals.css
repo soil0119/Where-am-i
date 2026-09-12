@@ -214,6 +214,31 @@ button {
   opacity: 0.62;
 }
 
+.language-toggle {
+  background: #eef2f7;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  padding: 3px;
+}
+
+.language-toggle button {
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  min-height: 28px;
+  padding: 4px 9px;
+}
+
+.language-toggle button.is-active {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+  color: #0f172a;
+}
+
 .scan-pill--live {
   background: #ecfdf5 !important;
   border-color: #99f6e4 !important;
@@ -1724,19 +1749,19 @@ button {
   padding: 10px;
 }
 
-.briefing-item--추가 {
+.briefing-item--added {
   border-left-color: #2563eb;
 }
 
-.briefing-item--변경 {
+.briefing-item--changed {
   border-left-color: #d97706;
 }
 
-.briefing-item--주의 {
+.briefing-item--warning {
   border-left-color: #dc2626;
 }
 
-.briefing-item--정상 {
+.briefing-item--stable {
   border-left-color: #0f766e;
 }
 

@@ -39,7 +39,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Where am I",
-  description: "작업 중인 파일, API, 서비스 영향 범위를 한 화면에서 보는 그래프",
+  description: "Visualize how code changes affect files, APIs, services, databases, and tests across repositories.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
@@ -52,7 +52,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ko">
+    <html lang="en" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
