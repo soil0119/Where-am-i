@@ -1,7 +1,10 @@
 "use client";
 
 import {
+  createContext,
+  useCallback,
   useEffect,
+  useContext,
   useMemo,
   useState,
   type CSSProperties,
@@ -42,6 +45,14 @@ import {
   Users,
   type LucideIcon,
 } from "lucide-react";
+import {
+  LANGUAGE_STORAGE_KEY,
+  localizeText,
+  resolveLocale,
+  translate,
+  type Locale,
+  type MessageKey,
+} from "./i18n";
 
 type NodeStatus = "stable" | "active" | "added" | "changed" | "risk";
 type EntityKind =
@@ -150,7 +161,7 @@ type EntityNodeData = Record<string, unknown> & {
 type EntityNode = Node<EntityNodeData, "entity">;
 
 type BriefingItem = {
-  type: "추가" | "변경" | "주의" | "정상";
+  type: "추가" | "변경" | "주의" | "정상" | "added" | "changed" | "warning" | "stable";
   title: string;
   detail: string;
 };
@@ -239,39 +250,76 @@ const RESIZE_OBSERVER_LOOP_MESSAGES = new Set([
 
 const statusMeta: Record<
   NodeStatus,
-  { label: string; color: string; edge: string; soft: string }
+  { color: string; edge: string; soft: string }
 > = {
   stable: {
-    label: "기존",
     color: "#475569",
     edge: "#94a3b8",
     soft: "rgba(148, 163, 184, 0.14)",
   },
   active: {
-    label: "작업중",
     color: "#0f766e",
     edge: "#0f766e",
     soft: "rgba(15, 118, 110, 0.13)",
   },
   added: {
-    label: "추가",
     color: "#2563eb",
     edge: "#2563eb",
     soft: "rgba(37, 99, 235, 0.13)",
   },
   changed: {
-    label: "변경",
     color: "#b45309",
     edge: "#d97706",
     soft: "rgba(217, 119, 6, 0.14)",
   },
   risk: {
-    label: "확인",
     color: "#dc2626",
     edge: "#dc2626",
     soft: "rgba(220, 38, 38, 0.12)",
   },
 };
+
+type I18nContextValue = {
+  locale: Locale;
+  t: (key: MessageKey, values?: Record<string, string | number>) => string;
+  text: (value: string) => string;
+};
+
+const I18nContext = createContext<I18nContextValue>({
+  locale: "en",
+  t: (key, values) => translate("en", key, values),
+  text: (value) => localizeText("en", value),
+});
+
+function useI18n() {
+  return useContext(I18nContext);
+}
+
+function statusLabel(locale: Locale, status: NodeStatus) {
+  const key: Record<NodeStatus, MessageKey> = {
+    stable: "stable",
+    active: "active",
+    added: "added",
+    changed: "changed",
+    risk: "attention",
+  };
+  return translate(locale, key[status]);
+}
+
+function briefingTone(type: BriefingItem["type"]) {
+  if (type === "추가" || type === "added") return "added";
+  if (type === "변경" || type === "changed") return "changed";
+  if (type === "주의" || type === "warning") return "warning";
+  return "stable";
+}
+
+function briefingLabel(locale: Locale, type: BriefingItem["type"]) {
+  const tone = briefingTone(type);
+  return translate(
+    locale,
+    tone === "warning" ? "warning" : tone === "stable" ? "normal" : tone,
+  );
+}
 
 const kindIcon: Record<EntityKind, LucideIcon> = {
   repo: Boxes,
@@ -1167,6 +1215,7 @@ function scanRefreshNote(event: MessageEvent) {
 }
 
 function EntityNodeCard({ data, selected }: NodeProps<EntityNode>) {
+  const { locale, text } = useI18n();
   const Icon = kindIcon[data.kind];
   const meta = statusMeta[data.status];
 
@@ -1188,16 +1237,16 @@ function EntityNodeCard({ data, selected }: NodeProps<EntityNode>) {
           <Icon size={20} strokeWidth={2.4} />
         </div>
         <div className="node-title-wrap">
-          <h2>{data.title}</h2>
+          <h2>{text(data.title)}</h2>
           <p>{data.repo}</p>
         </div>
-        <span className="node-status">{meta.label}</span>
+        <span className="node-status">{statusLabel(locale, data.status)}</span>
       </div>
-      <p className="node-summary">{data.impact}</p>
+      <p className="node-summary">{text(data.impact)}</p>
       <div className="node-path">{data.path}</div>
       <div className="node-badges">
         {data.badges.map((badge) => (
-          <span key={badge}>{badge}</span>
+          <span key={badge}>{text(badge)}</span>
         ))}
       </div>
       {data.metrics ? (
@@ -1205,7 +1254,7 @@ function EntityNodeCard({ data, selected }: NodeProps<EntityNode>) {
           {data.metrics.map((metric) => (
             <span key={metric.label}>
               <strong>{metric.value}</strong>
-              {metric.label}
+              {text(metric.label)}
             </span>
           ))}
         </div>
@@ -1220,11 +1269,12 @@ const nodeTypes: NodeTypes = {
 };
 
 function ChangeSummary({ change }: { change?: ChangeDetail }) {
+  const { t, text } = useI18n();
   if (!change) {
     return (
       <section className="change-card change-card--empty">
-        <h4>변경 내용</h4>
-        <p>이 노드는 현재 diff preview가 없습니다.</p>
+        <h4>{t("changeDetails")}</h4>
+        <p>{t("noDiffPreview")}</p>
       </section>
     );
   }
@@ -1232,11 +1282,11 @@ function ChangeSummary({ change }: { change?: ChangeDetail }) {
   return (
     <section className="change-card">
       <div className="change-card-header">
-        <h4>변경 내용</h4>
+        <h4>{t("changeDetails")}</h4>
         <span>{change.compare}</span>
       </div>
       <div className="change-stats">
-        <strong>{change.summary}</strong>
+        <strong>{text(change.summary)}</strong>
         <span>+{change.additions}</span>
         <span>-{change.deletions}</span>
       </div>
@@ -1247,7 +1297,7 @@ function ChangeSummary({ change }: { change?: ChangeDetail }) {
               className={`signal-pill signal-pill--${signal.action}`}
               key={`${signal.action}-${signal.kind}-${signal.label}`}
             >
-              {signal.action === "deleted" ? "삭제" : "추가"} {signal.label}
+              {t(signal.action === "deleted" ? "deleted" : "added")} {text(signal.label)}
             </span>
           ))}
         </div>
@@ -1272,7 +1322,7 @@ function ChangeSummary({ change }: { change?: ChangeDetail }) {
           ))}
         </pre>
       ) : (
-        <p>라인 preview 없이 파일 상태만 감지됐습니다.</p>
+        <p>{t("noLinePreview")}</p>
       )}
     </section>
   );
@@ -1285,6 +1335,7 @@ function EvidenceList({
   items?: EvidenceItem[];
   fallback?: string;
 }) {
+  const { t, text } = useI18n();
   const visibleItems = (items ?? []).filter(
     (item) => item.file || item.text,
   );
@@ -1294,7 +1345,7 @@ function EvidenceList({
   return (
     <section className="evidence-card">
       <div className="change-card-header">
-        <h4>근거</h4>
+        <h4>{t("evidence")}</h4>
         <span>{visibleItems.length > 0 ? "static scan" : "summary"}</span>
       </div>
       {visibleItems.length > 0 ? (
@@ -1313,13 +1364,14 @@ function EvidenceList({
           ))}
         </ul>
       ) : (
-        <p>{fallback}</p>
+        <p>{text(fallback ?? "")}</p>
       )}
     </section>
   );
 }
 
 function EdgeSummary({ edge }: { edge: Edge }) {
+  const { t, text } = useI18n();
   const evidenceItems = normalizeEvidenceItems(edge.data?.evidenceItems);
   const confidence =
     typeof edge.data?.confidence === "number"
@@ -1329,13 +1381,13 @@ function EdgeSummary({ edge }: { edge: Edge }) {
   return (
     <>
       <div className="section-title-row">
-        <h2>선택 선</h2>
+        <h2>{t("selectedConnection")}</h2>
         <span className="detail-status detail-status--changed">
-          {confidence !== null ? `${confidence}%` : "연결"}
+          {confidence !== null ? `${confidence}%` : t("connection")}
         </span>
       </div>
-      <h3>{String(edge.label ?? "연결")}</h3>
-      <p>{String(edge.data?.kind ?? "static relation")}</p>
+      <h3>{text(String(edge.label ?? t("connection")))}</h3>
+      <p>{text(String(edge.data?.kind ?? "static relation"))}</p>
       <dl className="detail-list">
         <div>
           <dt>source</dt>
@@ -1346,12 +1398,12 @@ function EdgeSummary({ edge }: { edge: Edge }) {
           <dd>{edge.target}</dd>
         </div>
         <div>
-          <dt>근거</dt>
-          <dd>{String(edge.data?.evidence ?? "연결 규칙")}</dd>
+          <dt>{t("evidence")}</dt>
+          <dd>{text(String(edge.data?.evidence ?? t("connectionRule")))}</dd>
         </div>
       </dl>
       <EvidenceList
-        fallback={String(edge.data?.evidence ?? "연결 규칙으로 생성된 선입니다.")}
+        fallback={String(edge.data?.evidence ?? t("generatedByRule"))}
         items={evidenceItems}
       />
     </>
@@ -1379,44 +1431,45 @@ function StructureOverview({
   focusLabel: string;
   evidenceCount: number;
 }) {
+  const { t, text } = useI18n();
   const steps = [
     {
-      label: "범위",
+      label: t("scope"),
       value:
         selectedRepoCount > 0 && selectedRepoCount !== repoCount
           ? `${selectedRepoCount}/${repoCount} repo`
           : `${repoCount} repo`,
-      detail: scenarioLabel,
+      detail: text(scenarioLabel),
       icon: Boxes,
     },
     {
-      label: "변경",
-      value: `${featureCount} 기능`,
-      detail: `영향 ${changedCount} · 확인 ${riskCount}`,
+      label: t("changes"),
+      value: `${featureCount} ${t("features")}`,
+      detail: `${t("impact")} ${changedCount} · ${t("attention")} ${riskCount}`,
       icon: FileDiff,
     },
     {
-      label: "진입점",
+      label: t("entryPoint"),
       value: "API / UI",
       detail: "route · wrapper",
       icon: Route,
     },
     {
-      label: "처리",
-      value: `${edgeCount} 연결`,
+      label: t("processing"),
+      value: `${edgeCount} ${t("connections")}`,
       detail: "handler · function",
       icon: ServerCog,
     },
     {
-      label: "근거",
+      label: t("evidence"),
       value: evidenceCount > 0 ? `${evidenceCount} lines` : "summary",
-      detail: focusLabel,
+      detail: text(focusLabel),
       icon: Code2,
     },
   ];
 
   return (
-    <section className="structure-overview" aria-label="시스템 구조 요약">
+    <section className="structure-overview" aria-label={t("systemOverview")}>
       {steps.map((step, index) => {
         const Icon = step.icon;
 
@@ -1440,20 +1493,21 @@ function StructureOverview({
 }
 
 function FeatureChangeList({ features }: { features: FeatureChange[] }) {
+  const { t, text } = useI18n();
   const actionLabel: Record<FeatureChangeAction, string> = {
-    added: "추가",
-    deleted: "삭제",
-    changed: "변경",
+    added: t("added"),
+    deleted: t("deleted"),
+    changed: t("changed"),
   };
 
   if (features.length === 0) {
     return (
       <section className="panel-section feature-change-section">
         <div className="section-title-row">
-          <h2>기능 변화</h2>
+          <h2>{t("featureChanges")}</h2>
           <span className="muted-count">0</span>
         </div>
-        <p className="empty-note">현재 비교 기준에서 기능 단위 변화가 없습니다.</p>
+        <p className="empty-note">{t("noFeatureChanges")}</p>
       </section>
     );
   }
@@ -1461,7 +1515,7 @@ function FeatureChangeList({ features }: { features: FeatureChange[] }) {
   return (
     <section className="panel-section feature-change-section">
       <div className="section-title-row">
-        <h2>기능 변화</h2>
+        <h2>{t("featureChanges")}</h2>
         <span className="muted-count">{features.length}</span>
       </div>
       <div className="feature-change-list">
@@ -1472,16 +1526,16 @@ function FeatureChangeList({ features }: { features: FeatureChange[] }) {
           >
             <div className="feature-change-head">
               <span>{actionLabel[feature.action]}</span>
-              <strong>{feature.title}</strong>
+              <strong>{text(feature.title)}</strong>
             </div>
-            <p>{feature.summary}</p>
-            <small>{feature.detail}</small>
+            <p>{text(feature.summary)}</p>
+            <small>{text(feature.detail)}</small>
             {(feature.signals.length > 0 ? feature.signals : feature.items).length > 0 ? (
               <ul>
                 {(feature.signals.length > 0 ? feature.signals : feature.items)
                   .slice(0, 3)
                   .map((item) => (
-                    <li key={item}>{item}</li>
+                    <li key={item}>{text(item)}</li>
                   ))}
               </ul>
             ) : null}
@@ -1499,6 +1553,7 @@ function TeamUpdateDetail({
   selection: SelectedTeamUpdate;
   onClear: () => void;
 }) {
+  const { t, text } = useI18n();
   const files = selection.update.files ?? [];
   const features = selection.update.featureChanges ?? [];
   const prLabel = selection.update.prNumber
@@ -1508,9 +1563,9 @@ function TeamUpdateDetail({
   return (
     <section className="panel-section feature-change-section pr-detail-section">
       <div className="section-title-row">
-        <h2>PR 변경</h2>
+        <h2>{t("prChanges")}</h2>
         <button className="clear-filter-button" onClick={onClear} type="button">
-          해제
+          {t("clear")}
         </button>
       </div>
       <article className="pr-detail-card">
@@ -1518,7 +1573,7 @@ function TeamUpdateDetail({
           <span>{prLabel}</span>
           <strong>{compactRepoName(selection.repo.name)}</strong>
         </div>
-        <p>{selection.update.summary || selection.update.subject}</p>
+        <p>{text(selection.update.summary || selection.update.subject)}</p>
         <div className="pr-stat-row">
           <span>{files.length} files</span>
           <span>+{selection.update.additions ?? 0}</span>
@@ -1531,9 +1586,9 @@ function TeamUpdateDetail({
                 className={`pr-feature pr-feature--${feature.action}`}
                 key={feature.id}
               >
-                <strong>{feature.title}</strong>
-                <span>{feature.summary}</span>
-                <small>{feature.detail}</small>
+                <strong>{text(feature.title)}</strong>
+                <span>{text(feature.summary)}</span>
+                <small>{text(feature.detail)}</small>
               </div>
             ))}
           </div>
@@ -1545,7 +1600,7 @@ function TeamUpdateDetail({
             ))}
           </ul>
         ) : (
-          <p className="empty-note">이 PR의 파일 목록을 찾지 못했습니다.</p>
+          <p className="empty-note">{t("noPrFiles")}</p>
         )}
       </article>
     </section>
@@ -1571,6 +1626,7 @@ function ScanHistoryPanel({
   onSelectRepo: (repoName: string | null) => void;
   onSelectEvent?: (event: ScanHistoryEvent) => void;
 }) {
+  const { t, text } = useI18n();
   const currentEvents = delta?.events ?? [];
   const currentIds = new Set(currentEvents.map((event) => event.id));
   const hasPrFilter = Boolean(selectedRepoName || prQuery.trim());
@@ -1581,18 +1637,18 @@ function ScanHistoryPanel({
   return (
     <section className="panel-section scan-history-section">
       <div className="section-title-row">
-        <h2>스캔 변화</h2>
-        <span className="muted-count">{delta?.summary ?? "대기"}</span>
+        <h2>{t("scanChanges")}</h2>
+        <span className="muted-count">{delta?.summary ? text(delta.summary) : t("waiting")}</span>
       </div>
       {repos.length > 0 ? (
-        <div className="scan-filter-row" aria-label="PR 조회 필터">
-          <div className="scan-repo-toggle" aria-label="repo별 최근 PR">
+        <div className="scan-filter-row" aria-label={t("prFilters")}>
+          <div className="scan-repo-toggle" aria-label={t("recentPrByRepo")}>
             <button
               className={!selectedRepoName ? "is-active" : ""}
               onClick={() => onSelectRepo(null)}
               type="button"
             >
-              전체
+              {t("all")}
             </button>
             {repos.map((repo) => (
               <button
@@ -1613,7 +1669,7 @@ function ScanHistoryPanel({
             <input
               inputMode="numeric"
               onChange={(event) => onChangePrQuery(event.target.value)}
-              placeholder="PR 번호"
+              placeholder={t("prNumber")}
               value={prQuery}
             />
           </label>
@@ -1628,11 +1684,11 @@ function ScanHistoryPanel({
                 at: "",
                 type: "none" as const,
                 scenarioId: "all",
-                scenarioLabel: "전체",
-                title: hasPrFilter ? "PR 결과 없음" : "스캔 기록 없음",
+                scenarioLabel: t("all"),
+                title: hasPrFilter ? t("noPrResults") : t("noScanHistory"),
                 detail: hasPrFilter
-                  ? "repo 또는 PR 번호 조건을 바꾸면 다시 조회됩니다."
-                  : "갱신을 누르면 직전 스냅샷과 비교합니다.",
+                  ? t("changePrFilter")
+                  : t("refreshToCompare"),
                 items: [],
               },
             ]
@@ -1645,9 +1701,9 @@ function ScanHistoryPanel({
         ))}
         {previousEvents.length > 0 ? (
           <>
-            <div className="history-subtitle">이전 변경</div>
+            <div className="history-subtitle">{t("previousChanges")}</div>
             {previousEvents.map((event) => (
-              <HistoryEventCard
+            <HistoryEventCard
                 event={event}
                 key={event.id}
                 onSelect={onSelectEvent}
@@ -1667,12 +1723,13 @@ function HistoryEventCard({
   event: ScanHistoryEvent;
   onSelect?: (event: ScanHistoryEvent) => void;
 }) {
+  const { locale, t, text } = useI18n();
   const label: Record<ScanHistoryEventType, string> = {
-    added: "새로",
-    deleted: "사라짐",
-    changed: "바뀜",
-    baseline: "기준",
-    none: "없음",
+    added: t("newLabel"),
+    deleted: t("removedLabel"),
+    changed: t("changedLabel"),
+    baseline: t("baselineLabel"),
+    none: t("noneLabel"),
   };
 
   const canSelect = Boolean(event.updateKey && onSelect);
@@ -1698,17 +1755,17 @@ function HistoryEventCard({
     >
       <div className="history-event-head">
         <span>{label[event.type]}</span>
-        <strong>{event.title}</strong>
+        <strong>{text(event.title)}</strong>
       </div>
       <small>
-        {event.scenarioLabel}
-        {event.at ? ` · ${formatEventTime(event.at)}` : ""}
+        {text(event.scenarioLabel)}
+        {event.at ? ` · ${formatEventTime(event.at, locale)}` : ""}
       </small>
-      <p>{event.detail}</p>
+      <p>{text(event.detail)}</p>
       {event.items.length > 0 ? (
         <ul>
           {event.items.slice(0, 4).map((item) => (
-            <li key={item}>{item}</li>
+            <li key={item}>{text(item)}</li>
           ))}
         </ul>
       ) : null}
@@ -1716,10 +1773,10 @@ function HistoryEventCard({
   );
 }
 
-function formatEventTime(value: string) {
+function formatEventTime(value: string, locale: Locale) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleTimeString("ko-KR", {
+  return date.toLocaleTimeString(locale === "ko" ? "ko-KR" : "en-US", {
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -1795,6 +1852,7 @@ function useResizeObserverLoopGuard() {
 export function WhereAmIClient() {
   useResizeObserverLoopGuard();
 
+  const [locale, setLocale] = useState<Locale>("en");
   const [scenarioId, setScenarioId] = useState<ScenarioId>("current-work");
   const [query, setQuery] = useState("");
   const [graphMode, setGraphMode] = useState<GraphMode>("focus");
@@ -1814,6 +1872,51 @@ export function WhereAmIClient() {
   const [leftPanelWidth, setLeftPanelWidth] = useState(286);
   const [leftPanelDraftWidth, setLeftPanelDraftWidth] = useState<number | null>(null);
   const [detailPanelHeight, setDetailPanelHeight] = useState(420);
+
+  const t = useCallback(
+    (key: MessageKey, values?: Record<string, string | number>) =>
+      translate(locale, key, values),
+    [locale],
+  );
+  const text = useCallback(
+    (value: string) => localizeText(locale, value),
+    [locale],
+  );
+
+  useEffect(() => {
+    let storedLocale: string | null = null;
+    try {
+      storedLocale = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    } catch {
+      storedLocale = null;
+    }
+    if (!storedLocale) {
+      storedLocale = document.cookie
+        .split(";")
+        .map((item) => item.trim())
+        .find((item) => item.startsWith(`${LANGUAGE_STORAGE_KEY}=`))
+        ?.split("=")[1] ?? null;
+    }
+    const nextLocale = storedLocale
+      ? resolveLocale(storedLocale)
+      : resolveLocale(window.navigator.language);
+    const timer = window.setTimeout(() => {
+      setLocale(nextLocale);
+      document.documentElement.lang = nextLocale;
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  function changeLocale(nextLocale: Locale) {
+    setLocale(nextLocale);
+    try {
+      window.localStorage.setItem(LANGUAGE_STORAGE_KEY, nextLocale);
+    } catch {
+      // The language still changes for this session when storage is unavailable.
+    }
+    document.cookie = `${LANGUAGE_STORAGE_KEY}=${nextLocale}; path=/; max-age=31536000; SameSite=Lax`;
+    document.documentElement.lang = nextLocale;
+  }
 
   useEffect(() => {
     let alive = true;
@@ -1914,10 +2017,13 @@ export function WhereAmIClient() {
     sourceNodes.forEach((node) => {
       const searchable = [
         node.data.title,
+        text(node.data.title),
         node.data.repo,
         node.data.path,
         node.data.summary,
+        text(node.data.summary),
         node.data.impact,
+        text(node.data.impact),
         node.data.evidence,
         ...(node.data.evidenceItems ?? []).map((item) => item.text),
         ...node.data.badges,
@@ -2028,6 +2134,7 @@ export function WhereAmIClient() {
     scenario,
     selectedRepoSet,
     selectedTeamUpdate,
+    text,
   ]);
   const displayGraph = useMemo(
     () => layoutApiFlowGraph(filteredGraph.nodes, filteredGraph.edges),
@@ -2037,10 +2144,10 @@ export function WhereAmIClient() {
   const allScenarioNodes = scenario.allNodes ?? scenario.nodes;
   const hiddenCount = Math.max(0, allScenarioNodes.length - scenario.nodes.length);
   const graphModeLabel = {
-    focus: "흐름",
-    all: "전체",
+    focus: t("flow"),
+    all: t("all"),
     api: "API",
-    verify: "검증",
+    verify: t("verify"),
   }[graphMode];
 
   const selectedNode =
@@ -2158,13 +2265,17 @@ export function WhereAmIClient() {
         };
       }),
       edges: displayGraph.edges.map((edge) => {
-        if (!hasFocus) return edge;
+        const localizedEdge = {
+          ...edge,
+          label: edge.label ? text(String(edge.label)) : edge.label,
+        };
+        if (!hasFocus) return localizedEdge;
 
         const isSelectedEdge = edge.id === selectedEdgeId;
         const isHighlighted = highlightedEdgeIds.has(edge.id);
 
         return {
-          ...edge,
+          ...localizedEdge,
           animated: false,
           selected: isSelectedEdge,
           className: [
@@ -2204,6 +2315,7 @@ export function WhereAmIClient() {
     selectedTeamFileSet,
     selectedTeamUpdate,
     selectionFocusActive,
+    text,
   ]);
   const scanDelta = normalizeScanDelta(snapshot?.scanDelta);
   const scanHistory = normalizeHistoryEvents(snapshot?.history);
@@ -2253,7 +2365,7 @@ export function WhereAmIClient() {
   );
   const selectedStructureRepoCount = visibleRepoCount;
   const structureFocusLabel = selectedEdge
-    ? String(selectedEdge.label ?? "연결")
+    ? text(String(selectedEdge.label ?? t("connection")))
     : selectedNode.data.title;
 
   function selectScenario(nextScenarioId: ScenarioId) {
@@ -2362,7 +2474,7 @@ export function WhereAmIClient() {
 
   async function refreshNow() {
     setIsRefreshing(true);
-    setRefreshNote("갱신 중");
+    setRefreshNote(t("refreshing"));
 
     let scanServerUsed = false;
     try {
@@ -2376,11 +2488,11 @@ export function WhereAmIClient() {
       const nextSnapshot = await readSnapshot();
       setSnapshot(nextSnapshot);
       setSnapshotState("live");
-      setRefreshNote(scanServerUsed ? "방금 재스캔" : "snapshot 재조회");
+      setRefreshNote(scanServerUsed ? t("rescanned") : t("snapshotReloaded"));
     } catch {
       setSnapshot(null);
       setSnapshotState("sample");
-      setRefreshNote("snapshot 없음");
+      setRefreshNote(t("snapshotMissing"));
     } finally {
       setIsRefreshing(false);
     }
@@ -2388,16 +2500,17 @@ export function WhereAmIClient() {
 
   const scanLabel =
     snapshotState === "live" && snapshot
-      ? `자동 스캔 ${new Date(snapshot.generatedAt).toLocaleTimeString("ko-KR", {
+      ? t("latestScan", { time: new Date(snapshot.generatedAt).toLocaleTimeString(locale === "ko" ? "ko-KR" : "en-US", {
           hour: "2-digit",
           minute: "2-digit",
           second: "2-digit",
-        })}`
+        }) })
       : snapshotState === "loading"
-        ? "스캔 확인 중"
-        : "샘플 모드";
+        ? t("checkingScan")
+        : t("sampleMode");
 
   return (
+    <I18nContext.Provider value={{ locale, t, text }}>
     <main className="app-shell">
       <header className="top-bar">
         <div className="brand">
@@ -2411,21 +2524,21 @@ export function WhereAmIClient() {
           </div>
           <div>
             <h1>Where am I</h1>
-            <p>여기가 어디죠</p>
+            <p>{t("tagline")}</p>
           </div>
         </div>
-        <div className="top-meta" aria-label="최신 반영 커밋">
+        <div className="top-meta" aria-label={t("latestCommit")}>
           <span className="commit-pill" title={commitScope.title}>
             <GitCommitHorizontal size={16} />
-            {commitScope.label}
+            {text(commitScope.label)}
           </span>
           {teamAlertScope ? (
             <span className="team-alert-pill" title={teamAlertScope.title}>
               <AlertTriangle size={16} />
-              {teamAlertScope.label}
+              {text(teamAlertScope.label)}
             </span>
           ) : null}
-          <span>{scenario.compare}</span>
+          <span>{text(scenario.compare)}</span>
           <span className={`scan-pill scan-pill--${snapshotState}`}>{scanLabel}</span>
           <button
             className="refresh-button"
@@ -2434,9 +2547,29 @@ export function WhereAmIClient() {
             type="button"
           >
             <ArrowRight size={15} />
-            {isRefreshing ? "갱신 중" : "갱신"}
+            {isRefreshing ? t("refreshing") : t("refresh")}
           </button>
-          {refreshNote ? <span>{refreshNote}</span> : null}
+          {refreshNote ? <span>{text(refreshNote)}</span> : null}
+          <div className="language-toggle" aria-label={t("language")} role="group">
+            <button
+              aria-pressed={locale === "en"}
+              className={locale === "en" ? "is-active" : ""}
+              onClick={() => changeLocale("en")}
+              title={t("switchToEnglish")}
+              type="button"
+            >
+              EN
+            </button>
+            <button
+              aria-pressed={locale === "ko"}
+              className={locale === "ko" ? "is-active" : ""}
+              onClick={() => changeLocale("ko")}
+              title={t("switchToKorean")}
+              type="button"
+            >
+              한국어
+            </button>
+          </div>
         </div>
       </header>
 
@@ -2452,7 +2585,7 @@ export function WhereAmIClient() {
       >
         <aside className="side-panel side-panel--left">
           <section className="panel-section">
-            <h2>관점</h2>
+            <h2>{t("perspectives")}</h2>
             <div className="mode-list">
               {availableScenarios.map((item) => (
                 <button
@@ -2471,8 +2604,8 @@ export function WhereAmIClient() {
                     <FileDiff size={18} />
                   )}
                   <span>
-                    <strong>{item.label}</strong>
-                    <small>{item.description}</small>
+                    <strong>{text(item.label)}</strong>
+                    <small>{text(item.description)}</small>
                   </span>
                 </button>
               ))}
@@ -2482,8 +2615,8 @@ export function WhereAmIClient() {
           {snapshot?.repos?.length ? (
             <section className="panel-section">
               <div className="section-title-row">
-                <h2>연결 repo</h2>
-                <span className="muted-count">조회</span>
+                <h2>{t("connectedRepos")}</h2>
+                <span className="muted-count">{t("inspect")}</span>
               </div>
               <div className="repo-list">
                 {snapshot.repos.map((repo) => {
@@ -2492,7 +2625,7 @@ export function WhereAmIClient() {
 
                   return (
                     <article
-                      aria-label={`${repo.name} API와 워크플로우 조회`}
+                      aria-label={t("repoWorkflowLabel", { repo: repo.name })}
                       aria-pressed={isSelected}
                       className={`repo-item repo-item--selectable ${
                         isSelected ? "is-selected" : ""
@@ -2514,9 +2647,9 @@ export function WhereAmIClient() {
                       </div>
                       <span>{repo.branch}</span>
                       <small>
-                        local {repo.changedCount} / team {repo.teamChangedCount}
+                        {t("local")} {repo.changedCount} / {t("team")} {repo.teamChangedCount}
                         {teamUpdateLabel ? ` / ${teamUpdateLabel}` : ""} /
-                        route {repo.routeCount} / engine {repo.engineEndpointCount}
+                        {t("route")} {repo.routeCount} / {t("engine")} {repo.engineEndpointCount}
                       </small>
                     </article>
                   );
@@ -2526,13 +2659,13 @@ export function WhereAmIClient() {
           ) : null}
 
           <section className="panel-section">
-            <h2>상태</h2>
+            <h2>{t("status")}</h2>
             <div className="status-grid">
               {Object.entries(statusMeta).map(([status, meta]) => (
                 <div key={status} className="status-count">
                   <span style={{ backgroundColor: meta.color }} />
                   <strong>{statusCounts[status as NodeStatus]}</strong>
-                  <small>{meta.label}</small>
+                  <small>{statusLabel(locale, status as NodeStatus)}</small>
                 </div>
               ))}
             </div>
@@ -2540,7 +2673,7 @@ export function WhereAmIClient() {
 
         </aside>
         <button
-          aria-label="좌측 패널 폭 조절"
+          aria-label={t("resizeLeft")}
           className="resize-grip resize-grip--left"
           onPointerDown={startLeftPanelResize}
           type="button"
@@ -2548,17 +2681,17 @@ export function WhereAmIClient() {
           <GripVertical size={16} />
         </button>
 
-        <section className="graph-panel" aria-label="API 작업 흐름 그래프">
+        <section className="graph-panel" aria-label={t("graph")}>
           <div className="graph-toolbar">
             <div>
-              <strong>{scenario.label}</strong>
-              <span>{graphModeLabel} 보기</span>
+              <strong>{text(scenario.label)}</strong>
+              <span>{graphModeLabel} {t("view")}</span>
               {hasRepoFilter ? (
                 <span>
                   repo{" "}
                   {selectedRepoNames.length === 1
                     ? selectedRepoNames[0]
-                    : `${selectedRepoNames.length}개 선택`}
+                    : `${selectedRepoNames.length} ${t("selected")}`}
                 </span>
               ) : null}
               {selectedTeamUpdate ? (
@@ -2572,36 +2705,36 @@ export function WhereAmIClient() {
               <span>{filtered.nodes.length} nodes</span>
               <span>{filtered.edges.length} edges</span>
               {selectedEdge ? (
-                <span>선택 선 {String(selectedEdge.label ?? "연결")}</span>
+                <span>{t("selectedEdge")} {text(String(selectedEdge.label ?? t("connection")))}</span>
               ) : null}
               {hiddenCount > 0 &&
               graphMode === "focus" &&
               !query.trim() ? (
-                <span>숨김 {hiddenCount}</span>
+                <span>{t("hidden")} {hiddenCount}</span>
               ) : null}
             </div>
             <div className="legend">
               <span>
                 <i className="legend-dot legend-dot--added" />
-                추가
+                {t("added")}
               </span>
               <span>
                 <i className="legend-dot legend-dot--changed" />
-                변경
+                {t("changed")}
               </span>
               <span>
                 <i className="legend-dot legend-dot--risk" />
-                확인
+                {t("attention")}
               </span>
             </div>
           </div>
-          <div className="graph-filter-bar" aria-label="그래프 필터">
-            <div className="view-toggle" aria-label="그래프 보기 범위">
+          <div className="graph-filter-bar" aria-label={t("graphFilters")}>
+            <div className="view-toggle" aria-label={t("graphRange")}>
               {[
-                ["focus", "흐름"],
-                ["all", "전체"],
+                ["focus", t("flow")],
+                ["all", t("all")],
                 ["api", "API"],
-                ["verify", "검증"],
+                ["verify", t("verify")],
               ].map(([mode, label]) => (
                 <button
                   key={mode}
@@ -2618,7 +2751,7 @@ export function WhereAmIClient() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="파일, API, repo 검색"
+                placeholder={t("searchPlaceholder")}
               />
             </label>
             <label className="toggle-row">
@@ -2627,7 +2760,7 @@ export function WhereAmIClient() {
                 onChange={(event) => setChangedOnly(event.target.checked)}
                 type="checkbox"
               />
-              변경 영향만
+              {t("changedOnly")}
             </label>
             <label className="toggle-row">
               <input
@@ -2635,7 +2768,7 @@ export function WhereAmIClient() {
                 onChange={(event) => setRiskOnly(event.target.checked)}
                 type="checkbox"
               />
-              확인 필요만
+              {t("riskOnly")}
             </label>
           </div>
           <StructureOverview
@@ -2697,7 +2830,7 @@ export function WhereAmIClient() {
 
         <aside className="side-panel side-panel--right">
           <button
-            aria-label="하단 패널 높이 조절"
+            aria-label={t("resizeBottom")}
             className="resize-grip resize-grip--bottom"
             onPointerDown={startDetailPanelResize}
             type="button"
@@ -2729,15 +2862,15 @@ export function WhereAmIClient() {
             ) : selectedTeamUpdate ? (
               <>
                 <div className="section-title-row">
-                  <h2>선택 지점</h2>
-                  <span className="detail-status detail-status--changed">코드</span>
+                  <h2>{t("selectedPoint")}</h2>
+                  <span className="detail-status detail-status--changed">{t("code")}</span>
                 </div>
                 <h3>
                   {selectedTeamUpdate.update.prNumber
                     ? `PR #${selectedTeamUpdate.update.prNumber}`
                     : selectedTeamUpdate.update.hash}
                 </h3>
-                <p>{selectedTeamUpdate.update.summary || selectedTeamUpdate.update.subject}</p>
+                <p>{text(selectedTeamUpdate.update.summary || selectedTeamUpdate.update.subject)}</p>
                 <dl className="detail-list">
                   <div>
                     <dt>repo</dt>
@@ -2745,10 +2878,10 @@ export function WhereAmIClient() {
                   </div>
                   <div>
                     <dt>path</dt>
-                    <dd>{selectedTeamUpdate.update.codePreview?.file ?? "대표 diff"}</dd>
+                    <dd>{selectedTeamUpdate.update.codePreview?.file ?? t("representativeDiff")}</dd>
                   </div>
                   <div>
-                    <dt>근거</dt>
+                    <dt>{t("evidence")}</dt>
                     <dd>{selectedTeamUpdate.update.subject}</dd>
                   </div>
                 </dl>
@@ -2757,15 +2890,15 @@ export function WhereAmIClient() {
             ) : (
               <>
                 <div className="section-title-row">
-                  <h2>선택 지점</h2>
+                  <h2>{t("selectedPoint")}</h2>
                   <span
                     className={`detail-status detail-status--${selectedNode.data.status}`}
                   >
-                    {statusMeta[selectedNode.data.status].label}
+                    {statusLabel(locale, selectedNode.data.status)}
                   </span>
                 </div>
-                <h3>{selectedNode.data.title}</h3>
-                <p>{selectedNode.data.summary}</p>
+                <h3>{text(selectedNode.data.title)}</h3>
+                <p>{text(selectedNode.data.summary)}</p>
                 <dl className="detail-list">
                   <div>
                     <dt>repo</dt>
@@ -2776,8 +2909,8 @@ export function WhereAmIClient() {
                     <dd>{selectedNode.data.path}</dd>
                   </div>
                   <div>
-                    <dt>근거</dt>
-                    <dd>{selectedNode.data.evidence}</dd>
+                    <dt>{t("evidence")}</dt>
+                    <dd>{text(selectedNode.data.evidence)}</dd>
                   </div>
                 </dl>
                 <EvidenceList
@@ -2791,25 +2924,25 @@ export function WhereAmIClient() {
 
           <section className="panel-section briefing-section">
             <div className="section-title-row">
-              <h2>브리핑</h2>
+              <h2>{t("briefing")}</h2>
               <Filter size={16} />
             </div>
             <div className="briefing-list">
               {scenario.briefing.map((item) => (
                 <article
                   key={`${item.type}-${item.title}`}
-                  className={`briefing-item briefing-item--${item.type}`}
+                  className={`briefing-item briefing-item--${briefingTone(item.type)}`}
                 >
-                  <span>{item.type}</span>
-                  <h3>{item.title}</h3>
-                  <p>{item.detail}</p>
+                  <span>{briefingLabel(locale, item.type)}</span>
+                  <h3>{text(item.title)}</h3>
+                  <p>{text(item.detail)}</p>
                 </article>
               ))}
             </div>
           </section>
 
           <section className="panel-section next-section">
-            <h2>다음 검증</h2>
+            <h2>{t("nextChecks")}</h2>
             <div className="next-checks">
               <div>
                 <AlertTriangle size={17} />
@@ -2828,5 +2961,6 @@ export function WhereAmIClient() {
         </aside>
       </div>
     </main>
+    </I18nContext.Provider>
   );
 }

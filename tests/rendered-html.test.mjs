@@ -33,37 +33,45 @@ test("server-renders the Where am I app shell", async () => {
   const html = await response.text();
   assert.match(html, /<title>Where am I<\/title>/i);
   assert.match(html, /Where am I/);
+  assert.match(html, /See where your change leads/);
+  assert.match(html, /lang="en"/);
   assert.doesNotMatch(html, /Codex/);
   assert.doesNotMatch(html, /react-loading-skeleton/);
   assert.doesNotMatch(html, /codex-preview/);
 });
 
 test("removes starter preview and keeps app-specific source", async () => {
-  const [page, layout, client, packageJson, scanServer, scanRepos, gitignore] = await Promise.all([
+  const [page, layout, client, i18n, styles, packageJson, scanServer, scanRepos, gitignore] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/WhereAmIClient.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/i18n.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../scripts/scan-server.mjs", import.meta.url), "utf8"),
     readFile(new URL("../scripts/scan-repos.mjs", import.meta.url), "utf8"),
     readFile(new URL("../.gitignore", import.meta.url), "utf8"),
   ]);
+  const uiSource = `${client}\n${i18n}`;
 
   assert.match(page, /export const metadata:\s*Metadata/);
   assert.match(page, /<WhereAmIClient \/>/);
   assert.match(layout, /title:\s*"Where am I"/);
   assert.match(client, /ReactFlow/);
+  assert.match(client, /LANGUAGE_STORAGE_KEY/);
+  assert.match(client, /document\.documentElement\.lang = nextLocale/);
+  assert.match(client, /className="language-toggle"/);
   assert.match(client, /팀 변경/);
   assert.match(client, /whereami-snapshot\.json/);
   assert.match(client, /localhost:3010\/scan/);
   assert.match(client, /localhost:3010\/events/);
   assert.match(client, /EventSource/);
-  assert.match(client, /작업 자동 반영/);
+  assert.match(uiSource, /작업 자동 반영/);
   assert.match(client, /hiddenCount/);
   assert.match(client, /scanDelta/);
-  assert.match(client, /스캔 변화/);
+  assert.match(uiSource, /스캔 변화/);
   assert.match(client, /GraphMode/);
-  assert.match(client, /전체 API/);
+  assert.match(uiSource, /전체 API/);
   assert.match(client, /graph-filter-bar/);
   assert.match(client, /selectedRepoNames/);
   assert.match(client, /selectRepoForMap/);
@@ -73,10 +81,10 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(client, /aria-pressed=\{isSelected\}/);
   assert.match(client, /engine-flow/);
   assert.match(client, /teamUpdates/);
-  assert.match(client, /팀원 변경 PR/);
-  assert.match(client, /최근 PR/);
+  assert.match(uiSource, /팀원 변경 PR/);
+  assert.match(uiSource, /최근 PR/);
   assert.match(client, /selectedTeamUpdateKey/);
-  assert.match(client, /PR 변경/);
+  assert.match(uiSource, /PR 변경/);
   assert.match(client, /compactTeamGraphNodes/);
   assert.match(client, /buildTeamUpdateEvents/);
   assert.match(client, /EvidenceList/);
@@ -90,12 +98,18 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(client, /scanRepoName/);
   assert.match(client, /scanPrQuery/);
   assert.match(client, /scan-repo-toggle/);
-  assert.match(client, /PR 번호/);
-  assert.match(client, /API와 워크플로우 조회/);
+  assert.match(uiSource, /PR 번호/);
+  assert.match(uiSource, /API와 워크플로우 조회/);
   assert.match(client, /setSelectedRepoNames\(\[\]\);/);
   assert.doesNotMatch(client, /<h2>변경 파일<\/h2>/);
   assert.doesNotMatch(client, /repo-main/);
   assert.doesNotMatch(client, /team-pr-chip/);
+  assert.match(i18n, /whereami-language/);
+  assert.match(i18n, /tagline: "See where your change leads"/);
+  assert.match(i18n, /tagline: "내 변경이 어디로 이어지는지 한눈에"/);
+  assert.match(i18n, /export function localizeText/);
+  assert.match(styles, /\.language-toggle/);
+  assert.match(styles, /\.briefing-item--warning/);
   assert.match(packageJson, /"name": "where-am-i"/);
   assert.doesNotMatch(packageJson, /"prebuild"/);
   assert.match(packageJson, /"scan": "node scripts\/scan-repos\.mjs"/);
