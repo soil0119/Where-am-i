@@ -161,7 +161,15 @@ type EntityNodeData = Record<string, unknown> & {
 type EntityNode = Node<EntityNodeData, "entity">;
 
 type BriefingItem = {
-  type: "추가" | "변경" | "주의" | "정상" | "added" | "changed" | "warning" | "stable";
+  type:
+    | "추가"
+    | "변경"
+    | "주의"
+    | "정상"
+    | "added"
+    | "changed"
+    | "warning"
+    | "stable";
   title: string;
   detail: string;
 };
@@ -2500,18 +2508,23 @@ export function WhereAmIClient() {
 
   const scanLabel =
     snapshotState === "live" && snapshot
-      ? t("latestScan", { time: new Date(snapshot.generatedAt).toLocaleTimeString(locale === "ko" ? "ko-KR" : "en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        }) })
+      ? t("latestScan", {
+          time: new Date(snapshot.generatedAt).toLocaleTimeString(
+            locale === "ko" ? "ko-KR" : "en-US",
+            {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            },
+          ),
+        })
       : snapshotState === "loading"
         ? t("checkingScan")
         : t("sampleMode");
 
   return (
     <I18nContext.Provider value={{ locale, t, text }}>
-    <main className="app-shell">
+      <main className="app-shell">
       <header className="top-bar">
         <div className="brand">
           <div className="brand-mark brand-mark--lost" aria-hidden="true">
@@ -2749,6 +2762,7 @@ export function WhereAmIClient() {
             <label className="search-box">
               <Search size={17} />
               <input
+                aria-label={t("searchPlaceholder")}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder={t("searchPlaceholder")}
@@ -2960,7 +2974,7 @@ export function WhereAmIClient() {
           </section>
         </aside>
       </div>
-    </main>
+      </main>
     </I18nContext.Provider>
   );
 }
