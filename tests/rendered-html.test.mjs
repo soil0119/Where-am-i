@@ -58,6 +58,8 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(page, /<WhereAmIClient \/>/);
   assert.match(layout, /title:\s*"Where am I"/);
   assert.match(client, /ReactFlow/);
+  assert.match(client, /FLOW_COLUMN_GAP = 76/);
+  assert.match(client, /fitViewOptions=\{\{ padding: 0\.08, maxZoom: 1 \}\}/);
   assert.match(client, /LANGUAGE_STORAGE_KEY/);
   assert.match(client, /document\.documentElement\.lang = nextLocale/);
   assert.match(client, /className="language-toggle"/);
@@ -111,6 +113,7 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(styles, /\.language-toggle/);
   assert.match(styles, /\.briefing-item--warning/);
   assert.match(styles, /grid-template-rows: auto 720px auto/);
+  assert.match(styles, /minmax\(320px, 620px\)/);
   assert.match(styles, /\.side-panel--left > \.panel-section:first-child/);
   assert.match(styles, /\.mode-list button:hover/);
   assert.match(packageJson, /"name": "where-am-i"/);
