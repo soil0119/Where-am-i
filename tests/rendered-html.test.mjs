@@ -110,6 +110,9 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(i18n, /export function localizeText/);
   assert.match(styles, /\.language-toggle/);
   assert.match(styles, /\.briefing-item--warning/);
+  assert.match(styles, /grid-template-rows: auto 720px auto/);
+  assert.match(styles, /\.side-panel--left > \.panel-section:first-child/);
+  assert.match(styles, /\.mode-list button:hover/);
   assert.match(packageJson, /"name": "where-am-i"/);
   assert.doesNotMatch(packageJson, /"prebuild"/);
   assert.match(packageJson, /"scan": "node scripts\/scan-repos\.mjs"/);
