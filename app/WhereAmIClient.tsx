@@ -1097,7 +1097,7 @@ function compactTeamGraphNodes(nodes: EntityNode[]) {
   });
 }
 
-const FLOW_COLUMN_GAP = 126;
+const FLOW_COLUMN_GAP = 76;
 const FLOW_LANE_STEP_X = 356;
 const FLOW_NODE_STEP_Y = 188;
 const FLOW_STAGE_ROWS = 4;
@@ -2805,7 +2805,7 @@ export function WhereAmIClient() {
               colorMode="light"
               edges={filtered.edges}
               fitView
-              fitViewOptions={{ padding: 0.16 }}
+              fitViewOptions={{ padding: 0.08, maxZoom: 1 }}
               maxZoom={1.5}
               minZoom={0.45}
               nodeTypes={nodeTypes}
