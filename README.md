@@ -6,6 +6,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Node.js 22.13+](https://img.shields.io/badge/Node.js-22.13%2B-339933?logo=node.js&logoColor=white)](./package.json)
 
+[Live demo](https://where-am-i-soil0119.soil0119.chatgpt.site/) · [Technical write-up](https://dev.to/soil0119/how-i-built-a-local-first-impact-graph-for-multi-repository-code-changes-3kkg)
+
 A local-first impact graph that shows how code changes flow across files, APIs, services, databases, and tests—without making you trace every repository by hand.
 
 > [!IMPORTANT]
