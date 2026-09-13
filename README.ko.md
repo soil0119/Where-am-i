@@ -6,6 +6,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Node.js 22.13+](https://img.shields.io/badge/Node.js-22.13%2B-339933?logo=node.js&logoColor=white)](./package.json)
 
+[공개 데모](https://where-am-i-soil0119.soil0119.chatgpt.site/) · [기술 소개](https://dev.to/soil0119/how-i-built-a-local-first-impact-graph-for-multi-repository-code-changes-3kkg)
+
 여러 저장소를 일일이 오가며 추적하지 않아도 현재 변경이 파일·API·서비스·DB·테스트 어디까지 영향을 주는지 보여주는 로컬 우선(local-first) 영향 그래프입니다.
 
 > [!IMPORTANT]
