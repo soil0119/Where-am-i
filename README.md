@@ -10,12 +10,40 @@
 
 A local-first impact graph that shows how code changes flow across files, APIs, services, databases, and tests—without requiring GitHub or making you trace every repository by hand.
 
+> **A diff tells you what changed. Where am I shows where that change leads.**
+
 > [!IMPORTANT]
 > Where am I is an early MVP. Do not use its analysis as the sole basis for deployment, security, or compatibility decisions.
 
 ## Why Where am I?
 
 In a multi-source system, a small API change can affect a frontend wrapper, a backend handler, an internal service, a database schema, documentation, and tests. Where am I collects evidence from local Git repositories or ordinary folders and turns those relationships into a clickable impact graph.
+
+## What makes it different?
+
+Where am I does not replace your Git host, IDE, or observability stack. It fills
+the gap between editing code and reviewing or deploying it: **what else does
+this change touch?**
+
+| Common approach | Good at | Where am I adds |
+| --- | --- | --- |
+| GitHub or a PR diff | Showing changed lines in one review | A cross-file and cross-repository impact path before a PR even exists |
+| IDE references | Finding symbols inside a supported language or workspace | Connections across HTTP routes, wrappers, handlers, docs, schemas, and tests |
+| Architecture diagrams | Explaining the system as it was documented | A rescan of the working tree or folder baseline that reflects today's code |
+| Hosted code intelligence | Building a centralized organization-wide index | A local-first option that needs no account, GitHub connection, or source upload |
+| Manual review checklists | Capturing team knowledge | Clickable evidence lines and repeatable contract checks generated from the code |
+
+Use it when you need to:
+
+- understand the blast radius of an uncommitted change;
+- review an API change that crosses frontend, backend, docs, and tests;
+- inspect several repositories or plain folders as one system;
+- work with private source that should remain on the developer machine;
+- give a new contributor a fast, evidence-backed map of where to look next.
+
+The graph is derived from inspectable static rules and source evidence. It is
+designed to support engineering judgment—not hide it behind an unexplained
+score or generated summary.
 
 ## Features
 
