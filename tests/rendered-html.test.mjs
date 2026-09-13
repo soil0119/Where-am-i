@@ -81,7 +81,7 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(client, /onSelectEvent/);
   assert.match(client, /role=\{canSelect \? "button" : undefined\}/);
   assert.match(client, /aria-pressed=\{isSelected\}/);
-  assert.match(client, /engine-flow/);
+  assert.doesNotMatch(client, /label:\s*"분석엔진"/);
   assert.match(client, /teamUpdates/);
   assert.match(uiSource, /팀원 변경 PR/);
   assert.match(uiSource, /최근 PR/);
@@ -123,6 +123,7 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(scanServer, /text\/event-stream/);
   assert.match(scanServer, /watchDebounceMs/);
   assert.match(scanServer, /watch\(/);
+  assert.match(scanServer, /config\.folders/);
   assert.match(scanRepos, /extractOpenApiRoutes/);
   assert.match(scanRepos, /extractCodeTopology/);
   assert.match(scanRepos, /codeFacts/);
@@ -130,6 +131,9 @@ test("removes starter preview and keeps app-specific source", async () => {
   assert.match(scanRepos, /apiNodesPerScenario/);
   assert.match(scanRepos, /isApiCatalogFile/);
   assert.match(scanRepos, /repoRoots:\s*\[\]/);
+  assert.match(scanRepos, /folders:\s*\[\]/);
+  assert.match(scanRepos, /scanFolder/);
+  assert.match(scanRepos, /previous file scan/);
   assert.match(gitignore, /public\/whereami-snapshot\.json/);
   assert.match(gitignore, /whereami\.config\.json/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);

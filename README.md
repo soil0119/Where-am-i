@@ -8,18 +8,18 @@
 
 [Live demo](https://where-am-i-soil0119.soil0119.chatgpt.site/) · [Technical write-up](https://dev.to/soil0119/how-i-built-a-local-first-impact-graph-for-multi-repository-code-changes-3kkg)
 
-A local-first impact graph that shows how code changes flow across files, APIs, services, databases, and tests—without making you trace every repository by hand.
+A local-first impact graph that shows how code changes flow across files, APIs, services, databases, and tests—without requiring GitHub or making you trace every repository by hand.
 
 > [!IMPORTANT]
 > Where am I is an early MVP. Do not use its analysis as the sole basis for deployment, security, or compatibility decisions.
 
 ## Why Where am I?
 
-In a multi-repository system, a small API change can affect a frontend wrapper, a backend handler, an internal service, a database schema, documentation, and tests. Where am I collects evidence from local Git repositories and turns those relationships into a clickable impact graph.
+In a multi-source system, a small API change can affect a frontend wrapper, a backend handler, an internal service, a database schema, documentation, and tests. Where am I collects evidence from local Git repositories or ordinary folders and turns those relationships into a clickable impact graph.
 
 ## Features
 
-- Visualize code paths affected by the current working-tree diff
+- Visualize code paths affected by the current working-tree diff or changes in a linked folder
 - Brief API and schema changes from teammates' pull requests and remote commits
 - Connect API paths, handlers, wrappers, OpenAPI documents, and tests
 - Search a combined API catalog across multiple repositories
@@ -28,7 +28,7 @@ In a multi-repository system, a small API change can affect a frontend wrapper, 
 
 ```mermaid
 flowchart LR
-  A[Git diff / team update] --> B[Local scanner]
+  A[Git diff / folder baseline / team update] --> B[Local scanner]
   B --> C[Files and functions]
   B --> D[APIs and handlers]
   B --> E[Databases / external calls]
@@ -42,7 +42,7 @@ flowchart LR
 ### Requirements
 
 - Node.js `>=22.13.0`
-- One or more local Git repositories to analyze
+- One or more local Git repositories or ordinary source folders to analyze
 
 ### Install and run
 
@@ -86,6 +86,29 @@ You can also list repositories explicitly:
 }
 ```
 
+### Connect a folder without Git or GitHub
+
+Add an ordinary source folder to `folders`. The first scan creates a local file
+baseline; later scans show files that were added, modified, or deleted relative
+to that baseline.
+
+```json
+{
+  "folders": [
+    {
+      "name": "my-local-project",
+      "path": "/absolute/path/to/my-local-project",
+      "type": "platform"
+    }
+  ],
+  "autoFetch": false
+}
+```
+
+Folder baselines are stored only in the ignored local snapshot. Git repositories
+and plain folders can be connected at the same time. The live watcher also
+rescans linked folders after file changes.
+
 See [`whereami.config.example.json`](./whereami.config.example.json) for every option and scan limit.
 
 ## Commands
@@ -102,15 +125,16 @@ See [`whereami.config.example.json`](./whereami.config.example.json) for every o
 
 ## Data and privacy
 
-Where am I reads the source code in the repositories you configure. The generated `whereami.config.json` and `public/whereami-snapshot.json` may contain:
+Where am I reads the source code in the repositories and folders you configure. The generated `whereami.config.json` and `public/whereami-snapshot.json` may contain:
 
-- Absolute local paths and repository names
+- Absolute local paths and source names
 - Branches, commits, pull request titles, and changed files
+- Folder-baseline content hashes and line counts
 - Function names, API paths, and source evidence lines
 
 Both files are ignored by Git by default. Production builds also remove the local snapshot and display bundled sample data. Even so, review screenshots and exported results for sensitive information before sharing them.
 
-When `autoFetch` is enabled, the scanner fetches remote Git metadata for each repository. Set it to `false`, or run `npm run scan -- --no-fetch`, to avoid network access during a scan.
+When `autoFetch` is enabled, the scanner fetches remote Git metadata for each Git repository. Folder sources never fetch a remote. Set it to `false`, or run `npm run scan -- --no-fetch`, to avoid network access during a scan.
 
 ## Current limitations
 

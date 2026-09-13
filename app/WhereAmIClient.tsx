@@ -37,12 +37,15 @@ import {
   GitCommitHorizontal,
   GripHorizontal,
   GripVertical,
+  Info,
   LayoutDashboard,
   Route,
   Search,
+  Settings2,
   ServerCog,
   TestTubeDiagonal,
   Users,
+  Waypoints,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -71,8 +74,7 @@ type EntityKind =
 type ScenarioId =
   | "current-work"
   | "team-briefing"
-  | "contract-check"
-  | "engine-flow";
+  | "contract-check";
 type GraphMode = "focus" | "all" | "api" | "verify";
 
 type Metric = {
@@ -196,6 +198,7 @@ type RepoSummary = {
   name: string;
   path: string;
   type: string;
+  sourceKind?: "git" | "folder";
   branch: string;
   baseBranch: string;
   head: string;
@@ -513,40 +516,6 @@ const scenarios: Scenario[] = [
       relation("contract-repo", "contract-route", "owns", "stable"),
       relation("contract-route", "contract-doc", "documents", "risk"),
       relation("contract-route", "contract-test", "covered by", "changed"),
-    ],
-  },
-  {
-    id: "engine-flow",
-    label: "분석엔진",
-    description: "분석 오버레이와 학습 모델 생성 흐름",
-    branch: "최근 반영 커밋 sample-engine f7g8h9i",
-    compare: "engine runtime/training flow",
-    focusNodeId: "engine-flow-analysis-start",
-    files: ["services/engine/api/routes/analysis.py", "services/engine/training/pipeline.py"],
-    briefing: [
-      {
-        type: "정상",
-        title: "분석 시작부터 결과 오버레이까지 표시",
-        detail: "request, feature build, scoring, callback 흐름을 선으로 표현",
-      },
-      {
-        type: "변경",
-        title: "학습 시작부터 모델 생성까지 표시",
-        detail: "dataset load, fit, artifact publish 단계가 분리됨",
-      },
-    ],
-    nodes: [
-      entity("engine-repo", "sample-engine", "sample-engine", "/workspace/sample-engine", "repo", "stable", 40, 220, "engine repo", "분석/학습 흐름 소유", "sample fallback", ["repo", "engine"]),
-      entity("engine-flow-analysis-start", "1. 분석 시작", "sample-engine", "services/engine/api/routes/analysis.py", "engine", "stable", 340, 120, "분석 요청 진입", "POST /analyze", "sample fallback", ["분석흐름", "1단계"]),
-      entity("engine-flow-analysis-overlay", "2. 결과 오버레이", "sample-engine", "services/engine/callbacks/overlay.py", "engine", "stable", 700, 120, "결과 전송", "분석 결과를 product UI callback으로 전달", "sample fallback", ["분석흐름", "2단계"]),
-      entity("engine-flow-training-start", "1. 학습 시작", "sample-engine", "services/engine/api/routes/training.py", "engine", "changed", 340, 420, "학습 요청 진입", "POST /train", "sample fallback", ["학습흐름", "1단계"]),
-      entity("engine-flow-model", "2. 모델 생성", "sample-engine", "services/engine/training/pipeline.py", "engine", "changed", 700, 420, "모델 artifact 생성", "fit 후 artifact publish", "sample fallback", ["학습흐름", "2단계"]),
-    ],
-    edges: [
-      relation("engine-repo", "engine-flow-analysis-start", "owns", "stable"),
-      relation("engine-flow-analysis-start", "engine-flow-analysis-overlay", "score -> overlay", "stable"),
-      relation("engine-repo", "engine-flow-training-start", "owns", "changed"),
-      relation("engine-flow-training-start", "engine-flow-model", "fit -> artifact", "changed"),
     ],
   },
 ];
@@ -1105,8 +1074,6 @@ const FLOW_START_X = 70;
 const FLOW_START_Y = 64;
 
 function flowColumn(node: EntityNode) {
-  const engineFlowStep = node.id.match(/^engine-flow:[^:]+:(\d+)-/);
-  if (engineFlowStep) return Math.max(0, Number(engineFlowStep[1]) - 1);
   if (node.id.startsWith("engine-error:")) return 5;
 
   return {
@@ -1126,8 +1093,6 @@ function flowColumn(node: EntityNode) {
 }
 
 function flowNodeOrder(node: EntityNode) {
-  if (node.id.startsWith("engine-flow:analysis:")) return 0;
-  if (node.id.startsWith("engine-flow:training:")) return 1;
   if (node.id.startsWith("engine-error:")) return 2;
 
   return node.data.title.localeCompare(node.data.title);
@@ -1973,9 +1938,9 @@ export function WhereAmIClient() {
 
   const availableScenarios = useMemo(
     () =>
-      (snapshot?.scenarios?.length ? snapshot.scenarios : scenarios).map(
-        normalizeScenario,
-      ),
+      (snapshot?.scenarios?.length ? snapshot.scenarios : scenarios)
+        .filter((item) => String(item.id) !== "engine-flow")
+        .map(normalizeScenario),
     [snapshot],
   );
 
@@ -2261,7 +2226,7 @@ export function WhereAmIClient() {
         const isPrChanged = prChangedNodeIds.has(node.id);
         return {
           ...node,
-          selected: node.id === selectedNode.id,
+          selected: node.id === selectedNode?.id,
           className: [
             node.className,
             isPrChanged ? "is-pr-node" : "",
@@ -2364,7 +2329,7 @@ export function WhereAmIClient() {
   );
   const selectedEvidenceCount = selectedEdge
     ? normalizeEvidenceItems(selectedEdge.data?.evidenceItems).length
-    : selectedNode.data.evidenceItems?.length ?? 0;
+    : selectedNode?.data.evidenceItems?.length ?? 0;
   const visibleRepoCount = useMemo(
     () =>
       snapshot?.repos?.length ??
@@ -2374,7 +2339,7 @@ export function WhereAmIClient() {
   const selectedStructureRepoCount = visibleRepoCount;
   const structureFocusLabel = selectedEdge
     ? text(String(selectedEdge.label ?? t("connection")))
-    : selectedNode.data.title;
+    : selectedNode?.data.title ?? t("noSelectedPoint");
 
   function selectScenario(nextScenarioId: ScenarioId) {
     const nextScenario = availableScenarios.find((item) => item.id === nextScenarioId);
@@ -2527,61 +2492,127 @@ export function WhereAmIClient() {
       <main className="app-shell">
       <header className="top-bar">
         <div className="brand">
-          <div className="brand-mark brand-mark--lost" aria-hidden="true">
-            <span className="lost-person">
-              <i className="lost-person-head" />
-              <i className="lost-person-back" />
-              <i className="lost-person-arm" />
-              <i className="lost-person-leg" />
-            </span>
+          <div className="brand-mark" aria-hidden="true">
+            <Waypoints size={23} strokeWidth={2.2} />
           </div>
           <div>
             <h1>Where am I</h1>
             <p>{t("tagline")}</p>
           </div>
         </div>
-        <div className="top-meta" aria-label={t("latestCommit")}>
-          <span className="commit-pill" title={commitScope.title}>
-            <GitCommitHorizontal size={16} />
-            {text(commitScope.label)}
-          </span>
-          {teamAlertScope ? (
-            <span className="team-alert-pill" title={teamAlertScope.title}>
-              <AlertTriangle size={16} />
-              {text(teamAlertScope.label)}
-            </span>
-          ) : null}
-          <span>{text(scenario.compare)}</span>
-          <span className={`scan-pill scan-pill--${snapshotState}`}>{scanLabel}</span>
-          <button
-            className="refresh-button"
-            disabled={isRefreshing}
-            onClick={refreshNow}
-            type="button"
-          >
-            <ArrowRight size={15} />
-            {isRefreshing ? t("refreshing") : t("refresh")}
-          </button>
-          {refreshNote ? <span>{text(refreshNote)}</span> : null}
-          <div className="language-toggle" aria-label={t("language")} role="group">
+        <div className="top-actions">
+          <div className="header-menu">
             <button
-              aria-pressed={locale === "en"}
-              className={locale === "en" ? "is-active" : ""}
-              onClick={() => changeLocale("en")}
-              title={t("switchToEnglish")}
+              aria-haspopup="true"
+              className="header-menu-trigger header-menu-trigger--info"
               type="button"
             >
-              EN
+              <Info size={17} />
+              {t("information")}
+              <span className={`header-status-dot header-status-dot--${snapshotState}`} />
             </button>
+            <section className="header-popover header-popover--info" aria-label={t("information")}>
+              <div className="header-popover-title">
+                <Info size={18} />
+                <div>
+                  <strong>{t("information")}</strong>
+                  <small>{t("projectStatusSummary")}</small>
+                </div>
+              </div>
+              <dl className="header-info-list">
+                <div>
+                  <dt>
+                    {snapshot?.repos?.some((repo) => repo.sourceKind === "folder")
+                      ? t("latestSourceState")
+                      : t("latestCommit")}
+                  </dt>
+                  <dd title={commitScope.title}>
+                    <GitCommitHorizontal size={15} />
+                    {text(commitScope.label)}
+                  </dd>
+                </div>
+                {teamAlertScope ? (
+                  <div className="header-info-alert">
+                    <dt>{t("teamChanges")}</dt>
+                    <dd title={teamAlertScope.title}>
+                      <AlertTriangle size={15} />
+                      {text(teamAlertScope.label)}
+                    </dd>
+                  </div>
+                ) : null}
+                <div>
+                  <dt>{t("comparison")}</dt>
+                  <dd>{text(scenario.compare)}</dd>
+                </div>
+                <div>
+                  <dt>{t("scanStatus")}</dt>
+                  <dd>
+                    <span className={`scan-pill scan-pill--${snapshotState}`}>{scanLabel}</span>
+                  </dd>
+                </div>
+                {refreshNote ? (
+                  <div>
+                    <dt>{t("latestUpdate")}</dt>
+                    <dd>{text(refreshNote)}</dd>
+                  </div>
+                ) : null}
+              </dl>
+            </section>
+          </div>
+
+          <div className="header-menu">
             <button
-              aria-pressed={locale === "ko"}
-              className={locale === "ko" ? "is-active" : ""}
-              onClick={() => changeLocale("ko")}
-              title={t("switchToKorean")}
+              aria-haspopup="true"
+              className="header-menu-trigger"
               type="button"
             >
-              한국어
+              <Settings2 size={17} />
+              {t("settings")}
             </button>
+            <section className="header-popover header-popover--settings" aria-label={t("settings")}>
+              <div className="header-popover-title">
+                <Settings2 size={18} />
+                <div>
+                  <strong>{t("settings")}</strong>
+                  <small>{t("displayAndScanSettings")}</small>
+                </div>
+              </div>
+              <div className="header-setting-row">
+                <div>
+                  <strong>{t("language")}</strong>
+                  <small>{t("displayLanguage")}</small>
+                </div>
+                <div className="language-toggle" aria-label={t("language")} role="group">
+                  <button
+                    aria-pressed={locale === "en"}
+                    className={locale === "en" ? "is-active" : ""}
+                    onClick={() => changeLocale("en")}
+                    title={t("switchToEnglish")}
+                    type="button"
+                  >
+                    EN
+                  </button>
+                  <button
+                    aria-pressed={locale === "ko"}
+                    className={locale === "ko" ? "is-active" : ""}
+                    onClick={() => changeLocale("ko")}
+                    title={t("switchToKorean")}
+                    type="button"
+                  >
+                    한국어
+                  </button>
+                </div>
+              </div>
+              <button
+                className="refresh-button refresh-button--wide"
+                disabled={isRefreshing}
+                onClick={refreshNow}
+                type="button"
+              >
+                <ArrowRight size={15} />
+                {isRefreshing ? t("refreshing") : t("refreshNow")}
+              </button>
+            </section>
           </div>
         </div>
       </header>
@@ -2611,8 +2642,6 @@ export function WhereAmIClient() {
                     <Users size={18} />
                   ) : item.id === "contract-check" ? (
                     <CheckCircle2 size={18} />
-                  ) : item.id === "engine-flow" ? (
-                    <ServerCog size={18} />
                   ) : (
                     <FileDiff size={18} />
                   )}
@@ -2635,6 +2664,7 @@ export function WhereAmIClient() {
                 {snapshot.repos.map((repo) => {
                   const isSelected = selectedRepoSet.has(repo.name);
                   const teamUpdateLabel = repoTeamUpdateLabel(repo);
+                  const isFolderSource = repo.sourceKind === "folder";
 
                   return (
                     <article
@@ -2656,12 +2686,13 @@ export function WhereAmIClient() {
                     >
                       <div className="repo-item-title">
                         <strong>{repo.name}</strong>
-                        <span>{repo.type}</span>
+                        <span>{isFolderSource ? t("folderSource") : repo.type}</span>
                       </div>
-                      <span>{repo.branch}</span>
+                      <span>{isFolderSource ? t("fileBaseline") : repo.branch}</span>
                       <small>
-                        {t("local")} {repo.changedCount} / {t("team")} {repo.teamChangedCount}
-                        {teamUpdateLabel ? ` / ${teamUpdateLabel}` : ""} /
+                        {isFolderSource
+                          ? `${t("filesChanged")} ${repo.changedCount}`
+                          : `${t("local")} ${repo.changedCount} / ${t("team")} ${repo.teamChangedCount}${teamUpdateLabel ? ` / ${teamUpdateLabel}` : ""}`} /
                         {t("route")} {repo.routeCount} / {t("engine")} {repo.engineEndpointCount}
                       </small>
                     </article>
@@ -2901,7 +2932,7 @@ export function WhereAmIClient() {
                 </dl>
                 <ChangeSummary change={selectedTeamUpdate.update.codePreview} />
               </>
-            ) : (
+            ) : selectedNode ? (
               <>
                 <div className="section-title-row">
                   <h2>{t("selectedPoint")}</h2>
@@ -2932,6 +2963,13 @@ export function WhereAmIClient() {
                   items={selectedNode.data.evidenceItems}
                 />
                 <ChangeSummary change={selectedNode.data.change} />
+              </>
+            ) : (
+              <>
+                <div className="section-title-row">
+                  <h2>{t("selectedPoint")}</h2>
+                </div>
+                <p className="empty-note">{t("noSelectedPoint")}</p>
               </>
             )}
           </section>

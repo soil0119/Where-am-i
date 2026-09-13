@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,7 @@ const noFetch = args.has("--no-fetch");
 
 const defaultConfig = {
   repoRoots: [],
+  folders: [],
   include: [],
   baseBranch: "develop",
   autoFetch: true,
@@ -22,6 +24,7 @@ const defaultConfig = {
   watchIntervalMs: 60 * 60 * 1000,
   scanLimits: {
     filesPerRepo: 900,
+    folderFilesPerSource: 5000,
     apiFilesPerRepo: 2400,
     apiNodesPerScenario: 800,
     changedFiles: 80,
@@ -64,6 +67,24 @@ const ignoredCallSymbols = new Set([
   "JSON",
   "Error",
 ]);
+const ignoredSourceDirectories = new Set([
+  ".git",
+  ".next",
+  ".turbo",
+  ".venv",
+  ".whereami-cache",
+  ".wrangler",
+  "__pycache__",
+  "artifacts",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "outputs",
+  "storage",
+  "vendor",
+  "work",
+]);
 
 await runOnce();
 
@@ -96,9 +117,14 @@ function readConfig() {
 
 async function runOnce() {
   const repos = discoverRepos(config);
-  const scannedRepos = repos.map((repo) => scanRepo(repo));
   const outputPath = path.resolve(rootDir, config.output);
   const previousSnapshot = readJson(outputPath);
+  const previousRepos = new Map(
+    (previousSnapshot?.repos ?? []).map((repo) => [path.resolve(repo.path), repo]),
+  );
+  const scannedRepos = repos.map((repo) =>
+    scanRepo(repo, previousRepos.get(path.resolve(repo.path))),
+  );
   const snapshot = buildSnapshot(scannedRepos, previousSnapshot);
 
   mkdirSync(path.dirname(outputPath), { recursive: true });
@@ -121,12 +147,24 @@ function readJson(file) {
 }
 
 function discoverRepos(config) {
-  const explicitRepos = (config.repos ?? []).map((repo) => ({
-    name: repo.name ?? path.basename(repo.path),
-    path: repo.path,
-    type: repo.type ?? classifyRepoType(repo.path),
-    baseBranch: repo.baseBranch ?? config.baseBranch,
-  }));
+  const explicitRepos = (config.repos ?? [])
+    .filter((repo) => repo?.path)
+    .map((repo) => ({
+      name: repo.name ?? path.basename(repo.path),
+      path: repo.path,
+      type: repo.type ?? classifyRepoType(repo.path),
+      baseBranch: repo.baseBranch ?? config.baseBranch,
+      sourceKind: repo.sourceKind ?? "auto",
+    }));
+  const explicitFolders = (config.folders ?? [])
+    .filter((folder) => folder?.path)
+    .map((folder) => ({
+      name: folder.name ?? path.basename(folder.path),
+      path: folder.path,
+      type: folder.type ?? classifyRepoType(folder.path),
+      baseBranch: "",
+      sourceKind: "folder",
+    }));
 
   const discovered = [];
   for (const root of config.repoRoots ?? []) {
@@ -144,12 +182,13 @@ function discoverRepos(config) {
         path: repoPath,
         type: classifyRepoType(repoPath),
         baseBranch: config.baseBranch,
+        sourceKind: "git",
       });
     }
   }
 
   const byPath = new Map();
-  [...explicitRepos, ...discovered].forEach((repo) => {
+  [...discovered, ...explicitRepos, ...explicitFolders].forEach((repo) => {
     byPath.set(path.resolve(repo.path), {
       ...repo,
       path: path.resolve(repo.path),
@@ -169,12 +208,14 @@ function classifyRepoType(repoPath) {
   return "repo";
 }
 
-function scanRepo(repo) {
+function scanRepo(repo, previousRepo) {
   const warnings = [];
+  const isGitRepo = existsSync(path.join(repo.path, ".git"));
 
-  if (!existsSync(path.join(repo.path, ".git"))) {
+  if (!existsSync(repo.path)) {
     return {
       ...repo,
+      sourceKind: repo.sourceKind === "folder" ? "folder" : "git",
       branch: "missing",
       baseRef: repo.baseBranch,
       head: "",
@@ -185,8 +226,13 @@ function scanRepo(repo) {
       fileStatuses: {},
       changeDetails: { current: {}, team: {} },
       entities: emptyEntities(),
-      warnings: ["git repo가 아님"],
+      fileState: {},
+      warnings: ["연결 경로 없음"],
     };
+  }
+
+  if (repo.sourceKind === "folder" || !isGitRepo) {
+    return scanFolder({ ...repo, sourceKind: "folder" }, previousRepo);
   }
 
   if (
@@ -264,6 +310,7 @@ function scanRepo(repo) {
 
   return {
     ...repo,
+    sourceKind: "git",
     branch,
     baseRef: baseRef ?? repo.baseBranch,
     head,
@@ -275,8 +322,173 @@ function scanRepo(repo) {
     fileStatuses,
     changeDetails,
     entities,
+    fileState: {},
     warnings,
   };
+}
+
+function scanFolder(repo, previousRepo) {
+  const trackedFiles = listFolderFiles(
+    repo.path,
+    config.scanLimits.folderFilesPerSource,
+  );
+  const fileState = buildFolderFileState(repo.path, trackedFiles);
+  const previousFileState = previousRepo?.sourceKind === "folder"
+    ? previousRepo.fileState ?? null
+    : null;
+  const fileStatuses = previousFileState
+    ? compareFolderFileState(previousFileState, fileState)
+    : {};
+  const changedFiles = Object.keys(fileStatuses).slice(
+    0,
+    config.scanLimits.changedFiles,
+  );
+  const currentChangeDetails = buildFolderChangeDetails(
+    repo.path,
+    fileStatuses,
+    previousFileState ?? {},
+    fileState,
+  );
+  const changeDetails = { current: currentChangeDetails, team: {} };
+  const apiCatalogFiles = trackedFiles
+    .filter(isApiCatalogFile)
+    .slice(0, config.scanLimits.apiFilesPerRepo);
+  const sampledFiles = trackedFiles.slice(0, config.scanLimits.filesPerRepo);
+  const priorityFiles = unique([
+    ...changedFiles.filter((file) => fileStatuses[file] !== "risk"),
+    ...apiCatalogFiles,
+    ...sampledFiles.filter(isPriorityFile),
+  ]).filter(isScannable);
+  const entities = extractEntities(repo, priorityFiles, fileStatuses, [], changeDetails);
+  const stateFingerprint = createHash("sha256")
+    .update(JSON.stringify(fileState))
+    .digest("hex")
+    .slice(0, 10);
+
+  return {
+    ...repo,
+    sourceKind: "folder",
+    branch: "folder",
+    baseRef: "previous scan",
+    head: `files:${stateFingerprint}`,
+    latestCommit: undefined,
+    dirty: changedFiles.length,
+    changedFiles,
+    teamChangedFiles: [],
+    teamUpdates: [],
+    fileStatuses,
+    changeDetails,
+    entities,
+    fileState,
+    warnings: trackedFiles.length >= config.scanLimits.folderFilesPerSource
+      ? [`파일 스캔 한도 ${config.scanLimits.folderFilesPerSource}개 도달`]
+      : [],
+  };
+}
+
+function listFolderFiles(root, limit) {
+  const files = [];
+  const pending = [""];
+
+  while (pending.length > 0 && files.length < limit) {
+    const relativeDirectory = pending.pop();
+    const absoluteDirectory = path.join(root, relativeDirectory);
+    let entries = [];
+    try {
+      entries = readdirSync(absoluteDirectory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const relativePath = path.join(relativeDirectory, entry.name);
+      if (entry.isDirectory()) {
+        if (!ignoredSourceDirectories.has(entry.name)) pending.push(relativePath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+
+      const normalized = relativePath.split(path.sep).join("/");
+      if (isScannable(normalized)) files.push(normalized);
+      if (files.length >= limit) break;
+    }
+  }
+
+  return files.sort();
+}
+
+function buildFolderFileState(root, files) {
+  const state = {};
+
+  for (const file of files) {
+    const absolute = path.join(root, file);
+    let text = "";
+    try {
+      if (statSync(absolute).size > 1_400_000) continue;
+      text = readFileSync(absolute, "utf8");
+    } catch {
+      continue;
+    }
+    state[file] = {
+      hash: createHash("sha256").update(text).digest("hex"),
+      lines: text ? text.split("\n").length : 0,
+    };
+  }
+
+  return state;
+}
+
+function compareFolderFileState(previous, current) {
+  const statuses = {};
+
+  for (const [file, state] of Object.entries(current)) {
+    if (!previous[file]) statuses[file] = "added";
+    else if (previous[file].hash !== state.hash) statuses[file] = "changed";
+  }
+  for (const file of Object.keys(previous)) {
+    if (!current[file]) statuses[file] = "risk";
+  }
+
+  return statuses;
+}
+
+function buildFolderChangeDetails(root, fileStatuses, previous, current) {
+  const details = {};
+
+  for (const [file, status] of Object.entries(fileStatuses)) {
+    const currentLines = current[file]?.lines ?? 0;
+    const previousLines = previous[file]?.lines ?? 0;
+    const added = status === "added"
+      ? currentLines
+      : Math.max(0, currentLines - previousLines);
+    const deleted = status === "risk"
+      ? previousLines
+      : Math.max(0, previousLines - currentLines);
+    const text = status === "risk" ? "" : readText(path.join(root, file));
+    details[file] = {
+      compare: "previous file scan",
+      additions: added,
+      deletions: deleted,
+      summary: status === "changed"
+        ? `기준점 이후 내용 변경 (${previousLines}줄 → ${currentLines}줄)`
+        : summarizeChange(added, deleted, status),
+      lines: status === "added"
+        ? text.split("\n").filter(Boolean).slice(0, 18).map((line) => trimDiffLine(`+${line}`))
+        : [],
+      signals: status === "risk"
+        ? [{ action: "deleted", kind: "file", label: titleFromFile(file) }]
+        : uniqueBy(
+            text
+              .split("\n")
+              .map((line) => extractChangeSignal(line.trim(), status === "added" ? "added" : "changed", file))
+              .filter(Boolean),
+            (item) => `${item.action}:${item.kind}:${item.label}`,
+          ).slice(0, 8),
+    };
+  }
+
+  return details;
 }
 
 function emptyEntities() {
@@ -285,7 +497,6 @@ function emptyEntities() {
     wrappers: [],
     uiFiles: [],
     engineEndpoints: [],
-    engineFlows: [],
     codeFacts: [],
     codeEdges: [],
     docs: [],
@@ -863,12 +1074,6 @@ function extractEntities(repo, files, fileStatuses, teamChangedFiles, changeDeta
   entities.codeFacts.push(...codeTopology.facts);
   entities.codeEdges.push(...codeTopology.edges);
 
-  if (repo.type === "engine" || entities.engineEndpoints.length > 0) {
-    entities.engineFlows.push(
-      ...buildEngineFlowEntities(repo, entities.codeFacts, entities.engineEndpoints),
-    );
-  }
-
   for (const route of [...entities.routes, ...entities.engineEndpoints]) {
     route.hasDocs = docTexts.some((doc) => mentionsPathOrTokens(doc.text, route.path));
     route.hasTests = testTexts.some((testFile) => mentionsPathOrTokens(testFile.text, route.path));
@@ -876,7 +1081,6 @@ function extractEntities(repo, files, fileStatuses, teamChangedFiles, changeDeta
 
   entities.routes = dedupeApiRoutes(entities.routes).slice(0, config.scanLimits.apiNodesPerScenario);
   entities.engineEndpoints = dedupeApiRoutes(entities.engineEndpoints).slice(0, config.scanLimits.apiNodesPerScenario);
-  entities.engineFlows = uniqueBy(entities.engineFlows, (item) => item.id).slice(0, 40);
   entities.codeFacts = uniqueBy(entities.codeFacts, (item) => item.id).slice(0, config.scanLimits.codeFactsPerRepo);
   entities.codeEdges = uniqueBy(entities.codeEdges, (item) => item.id).slice(0, config.scanLimits.codeEdgesPerRepo);
   entities.wrappers = uniqueBy(entities.wrappers, (item) => `${item.method} ${item.path} ${item.file}`).slice(0, 120);
@@ -1075,52 +1279,6 @@ function extractOpenApiRoutes(text, base) {
   });
 
   return routes;
-}
-
-function buildEngineFlowEntities(repo, codeFacts, endpoints) {
-  const endpointFacts = endpoints.map((endpoint) => ({
-    ...endpoint,
-    id: `engine-flow:endpoint:${hash(`${endpoint.file}:${endpoint.method}:${endpoint.path}`)}`,
-    kind: "engine",
-    symbol: endpoint.handlerName || endpoint.path,
-    confidence: 0.86,
-  }));
-  const candidates = uniqueBy(
-    [...endpointFacts, ...codeFacts.filter(isEngineFlowCandidate)],
-    (item) => item.id,
-  )
-    .map((item) => ({
-      ...item,
-      flowGroup: engineFlowGroup(item),
-      flowScore: engineFlowScore(item),
-    }))
-    .filter((item) => item.flowGroup);
-
-  const grouped = new Map();
-  for (const item of candidates) {
-    const group = grouped.get(item.flowGroup) ?? [];
-    group.push(item);
-    grouped.set(item.flowGroup, group);
-  }
-
-  return [...grouped.entries()].flatMap(([group, items]) =>
-    items
-      .sort((left, right) => right.flowScore - left.flowScore || lineNumber(left) - lineNumber(right))
-      .slice(0, group === "error-code" ? 10 : 8)
-      .map((item, index) => ({
-        ...item,
-        id: `engine-flow:${group}:${index + 1}-${hash(item.id).slice(0, 6)}`,
-        kind: item.kind === "error" ? "error" : "engine",
-        title: `${index + 1}. ${item.title}`,
-        summary: item.summary,
-        evidence: item.evidence,
-        flowGroup: group,
-        flowStep: index + 1,
-        transition: engineTransition(item, group),
-        status: item.kind === "error" ? "risk" : item.status,
-        confidence: item.confidence ?? 0.68,
-      })),
-  );
 }
 
 function extractFrontendApiCalls(text, base) {
@@ -1540,60 +1698,6 @@ function strongestStatus(left, right) {
   return (score[left] ?? 0) >= (score[right] ?? 0) ? left : right;
 }
 
-function lineNumber(item) {
-  return Number(item.line ?? item.flowStep ?? 0);
-}
-
-function isEngineFlowCandidate(item) {
-  if (item.kind === "error") return true;
-  if (item.kind === "external" || item.kind === "db") return false;
-  return /engine|analysis|analy[sz]e|score|overlay|callback|train|retrain|fit|model|artifact|feature|dataset|collect|predict|detect/i.test(
-    `${item.repoType} ${item.file} ${item.title} ${item.symbol ?? ""} ${item.path ?? ""}`,
-  );
-}
-
-function engineFlowGroup(item) {
-  const target = `${item.file} ${item.title} ${item.symbol ?? ""} ${item.path ?? ""}`.toLowerCase();
-  if (item.kind === "error" || /err[-_]\d|snt|error|failure|exception/.test(target)) {
-    return "error-code";
-  }
-  if (/train|retrain|fit|model|artifact|feature|dataset|collect|label/.test(target)) {
-    return "training";
-  }
-  if (/analysis|analyze|analyse|score|overlay|callback|predict|detect|incident|anomaly/.test(target)) {
-    return "analysis";
-  }
-  return "";
-}
-
-function engineFlowScore(item) {
-  const target = `${item.file} ${item.title} ${item.symbol ?? ""} ${item.path ?? ""}`.toLowerCase();
-  const order = [
-    [/\/|route|endpoint|start|request|create|bootstrap/, 120],
-    [/plan|validate|admission|config/, 104],
-    [/collect|fetch|load|query|dataset|source/, 92],
-    [/feature|transform|matrix|prepare/, 80],
-    [/score|predict|detect|fit|train/, 68],
-    [/overlay|artifact|publish|save|store|callback|result/, 56],
-    [/error|failure|exception|err[-_]\d|snt/, 44],
-  ];
-  const matched = order.find(([pattern]) => pattern.test(target))?.[1] ?? 20;
-  const statusBoost = item.status === "stable" ? 0 : 12;
-  return matched + statusBoost + Math.round((item.confidence ?? 0.5) * 10);
-}
-
-function engineTransition(item, group) {
-  const target = `${item.title} ${item.symbol ?? ""} ${item.path ?? ""}`.toLowerCase();
-  if (group === "error-code") return "error branch";
-  if (/route|endpoint|request|start|create|bootstrap/.test(target)) return "request";
-  if (/plan|validate|admission|config/.test(target)) return "validate";
-  if (/collect|fetch|load|query|dataset|source/.test(target)) return "collect";
-  if (/feature|transform|matrix|prepare/.test(target)) return "feature";
-  if (/score|predict|detect|fit|train/.test(target)) return group === "training" ? "fit" : "score";
-  if (/overlay|artifact|publish|save|store|callback|result/.test(target)) return "publish/result";
-  return group === "training" ? "training flow" : "analysis flow";
-}
-
 function normalizeRoutePath(value) {
   return value
     .replace(/\$\{\s*encodeURIComponent\(([^)]+)\)\s*\}/g, "{$1}")
@@ -1647,6 +1751,20 @@ function pathTokens(value) {
 }
 
 function buildSnapshot(repos, previousSnapshot) {
+  const hasGitSource = repos.some((repo) => repo.sourceKind === "git");
+  const hasFolderSource = repos.some((repo) => repo.sourceKind === "folder");
+  const currentDescription = hasFolderSource
+    ? hasGitSource
+      ? "Git diff와 이전 파일 스캔 기준"
+      : "이전 파일 스캔 기준"
+    : "실제 git diff 기준";
+  const scenarios = [
+    buildScenario("current-work", "내 작업", currentDescription, repos),
+    ...(hasGitSource
+      ? [buildScenario("team-briefing", "팀 변경", "원격 Git 반영 후 차이", repos)]
+      : []),
+    buildScenario("contract-check", "API 계약", "route, wrapper, 문서, 테스트 자동 비교", repos),
+  ];
   const snapshot = {
     generatedAt: new Date().toISOString(),
     source: "local-scan",
@@ -1654,6 +1772,7 @@ function buildSnapshot(repos, previousSnapshot) {
       name: repo.name,
       path: repo.path,
       type: repo.type,
+      sourceKind: repo.sourceKind,
       branch: repo.branch,
       baseBranch: repo.baseRef,
       head: repo.head,
@@ -1666,17 +1785,13 @@ function buildSnapshot(repos, previousSnapshot) {
       wrapperCount: repo.entities.wrappers.length,
       engineEndpointCount: repo.entities.engineEndpoints.length,
       codeFactCount: repo.entities.codeFacts.length,
+      fileState: repo.fileState,
       warnings: repo.warnings,
     })),
     warnings: repos.flatMap((repo) =>
       repo.warnings.map((warning) => `${repo.name}: ${warning}`),
     ),
-    scenarios: [
-      buildScenario("current-work", "내 작업", "실제 git diff 기준", repos),
-      buildScenario("team-briefing", "팀 변경", "origin/develop 반영 후 차이", repos),
-      buildScenario("contract-check", "API 계약", "route, wrapper, 문서, 테스트 자동 비교", repos),
-      buildScenario("engine-flow", "분석엔진", "분석 오버레이와 학습 모델 생성 흐름", repos),
-    ],
+    scenarios,
   };
   snapshot.scanDelta = buildScanDelta(previousSnapshot, snapshot);
   snapshot.history = buildHistory(previousSnapshot, snapshot.scanDelta);
@@ -1697,7 +1812,7 @@ function buildScanDelta(previousSnapshot, snapshot) {
           scenarioId: "all",
           scenarioLabel: "전체",
           title: "히스토리 기준점 생성",
-          detail: `${snapshot.repos.length}개 repo와 ${snapshot.scenarios.reduce((sum, scenario) => sum + (scenario.featureChanges?.length ?? 0), 0)}개 기능 변화를 기준으로 저장함`,
+          detail: `${snapshot.repos.length}개 소스와 ${snapshot.scenarios.reduce((sum, scenario) => sum + (scenario.featureChanges?.length ?? 0), 0)}개 기능 변화를 기준으로 저장함`,
           items: snapshot.repos.map((repo) => `${repo.name} ${repo.branch}`).slice(0, 5),
         },
       ];
@@ -1939,27 +2054,25 @@ function buildScenario(id, label, description, repos) {
     ? "team"
     : id === "contract-check"
       ? "contract"
-      : id === "engine-flow"
-        ? "engine"
-        : "current";
-  const isEngineFlow = mode === "engine";
+      : "current";
   const nodes = [];
   const edges = [];
   const files = [];
   const briefing = [];
-  const graphRepos = isEngineFlow
-    ? repos.filter((repo) => repo.type === "engine" || repo.entities.engineEndpoints.length > 0)
-    : repos;
-
-  graphRepos.forEach((repo, index) => {
+  repos.forEach((repo, index) => {
     const status = repo.dirty > 0 || repo.changedFiles.length > 0 ? "active" : repo.teamChangedFiles.length > 0 ? "changed" : "stable";
-    nodes.push(node(`repo:${repo.name}`, repo.name, repo.name, repo.path, "repo", status, 0, index, `${repo.branch} / ${repo.head}`, `${repo.changedFiles.length} local, ${repo.teamChangedFiles.length} team changes`, "git status + branch scan", [repo.type, repo.branch], [
+    const sourceLabel = repo.sourceKind === "folder" ? "folder snapshot" : `${repo.branch} / ${repo.head}`;
+    const sourceSummary = repo.sourceKind === "folder"
+      ? `${repo.changedFiles.length} file changes since previous scan`
+      : `${repo.changedFiles.length} local, ${repo.teamChangedFiles.length} team changes`;
+    const sourceEvidence = repo.sourceKind === "folder" ? "local folder snapshot" : "git status + branch scan";
+    nodes.push(node(`repo:${repo.name}`, repo.name, repo.name, repo.path, "repo", status, 0, index, sourceLabel, sourceSummary, sourceEvidence, [repo.type, repo.sourceKind], [
       { label: "routes", value: String(repo.entities.routes.length) },
-      { label: "dirty", value: String(repo.dirty) },
+      { label: repo.sourceKind === "folder" ? "changed" : "dirty", value: String(repo.dirty) },
     ]));
   });
 
-  const selectedFiles = isEngineFlow ? [] : selectFilesForMode(repos, mode);
+  const selectedFiles = selectFilesForMode(repos, mode);
   files.push(...selectedFiles.map((item) => `${item.repo.name}/${item.file}`));
 
   for (const item of selectedFiles.slice(0, 16)) {
@@ -1975,9 +2088,15 @@ function buildScenario(id, label, description, repos) {
       status,
       kindColumn(kind),
       nodes.length,
-      status === "risk" ? "삭제 또는 검증 필요 파일" : "git diff에 걸린 실제 파일",
-      `${item.repo.branch}에서 변경 감지`,
-        "git status/diff",
+      status === "risk"
+        ? "삭제 또는 검증 필요 파일"
+        : item.repo.sourceKind === "folder"
+          ? "이전 파일 스캔과 달라진 파일"
+          : "git diff에 걸린 실제 파일",
+      item.repo.sourceKind === "folder"
+        ? "이전 파일 스캔 이후 변경 감지"
+        : `${item.repo.branch}에서 변경 감지`,
+        item.repo.sourceKind === "folder" ? "file snapshot diff" : "git status/diff",
         [status, kind],
         undefined,
         item.change,
@@ -1991,52 +2110,47 @@ function buildScenario(id, label, description, repos) {
     repos.flatMap((repo) => repo.entities.routes),
     contextTokens,
     mode,
-    isEngineFlow ? 0 : apiEntityLimit ?? 16,
+    apiEntityLimit ?? 16,
   );
   const wrappers = selectEntities(
     repos.flatMap((repo) => repo.entities.wrappers),
     contextTokens,
     mode,
-    isEngineFlow ? 0 : apiEntityLimit ?? 14,
+    apiEntityLimit ?? 14,
   );
   const endpoints = selectEntities(
     repos.flatMap((repo) => repo.entities.engineEndpoints),
     contextTokens,
     mode,
-    isEngineFlow ? config.scanLimits.apiNodesPerScenario : apiEntityLimit ?? 12,
+    apiEntityLimit ?? 12,
   );
-  const engineFlows = isEngineFlow
-    ? repos.flatMap((repo) => repo.entities.engineFlows)
-    : [];
   const docs = selectEntities(
     repos.flatMap((repo) => repo.entities.docs),
     contextTokens,
     mode,
-    isEngineFlow ? 0 : 8,
+    8,
   );
   const tests = selectEntities(
     repos.flatMap((repo) => repo.entities.tests),
     contextTokens,
     mode,
-    isEngineFlow ? 0 : 8,
+    8,
   );
   const dbFiles = selectEntities(
     repos.flatMap((repo) => repo.entities.dbFiles),
     contextTokens,
     mode,
-    isEngineFlow ? 0 : 5,
+    5,
   );
   const codeFacts = selectEntities(
     repos.flatMap((repo) => repo.entities.codeFacts),
     contextTokens,
     mode,
-    isEngineFlow ? 0 : 18,
+    18,
   );
   const codeEdges = repos.flatMap((repo) => repo.entities.codeEdges);
 
-  const selectedEntities = isEngineFlow
-    ? [...engineFlows, ...endpoints]
-    : [...wrappers, ...routes, ...endpoints, ...codeFacts, ...docs, ...tests, ...dbFiles];
+  const selectedEntities = [...wrappers, ...routes, ...endpoints, ...codeFacts, ...docs, ...tests, ...dbFiles];
   const featureChanges = buildFeatureChanges(selectedFiles, selectedEntities, mode);
 
   for (const item of selectedEntities) {
@@ -2071,29 +2185,10 @@ function buildScenario(id, label, description, repos) {
   connectByFile(nodes, edges);
   connectApiFlow(wrappers, routes, endpoints, edges);
   connectStaticCodeEdges(selectedEntities, codeEdges, edges);
-  connectEngineFlows(engineFlows, edges);
   connectContracts(routes, docs, tests, edges);
   connectData(routes, dbFiles, edges);
 
-  if (isEngineFlow) {
-    briefing.push(
-      {
-        type: "정상",
-        title: "분석 흐름 표시",
-        detail: "/analyze부터 query fetch, scoring, overlay callback까지",
-      },
-      {
-        type: "정상",
-        title: "학습 흐름 표시",
-        detail: "/train부터 수집, 품질검증, 모델 생성, artifact publish까지",
-      },
-      {
-        type: "주의",
-        title: "에러 코드 표시",
-        detail: "query/source/feature/artifact/callback 실패가 error-code 노드로 연결됨",
-      },
-    );
-  } else if (featureChanges.length > 0) {
+  if (featureChanges.length > 0) {
     const featureCounts = countFeatureActions(featureChanges);
     briefing.push({
       type: featureCounts.deleted > 0 ? "주의" : featureCounts.added > 0 ? "추가" : "변경",
@@ -2102,16 +2197,7 @@ function buildScenario(id, label, description, repos) {
     });
   }
 
-  if (isEngineFlow) {
-    const changedFlowCount = engineFlows.filter((item) => item.status !== "stable").length;
-    if (changedFlowCount > 0) {
-      briefing.push({
-        type: "변경",
-        title: `엔진 흐름 구성 파일 ${changedFlowCount}개 변경`,
-        detail: "해당 노드가 active/changed 상태로 표시됨",
-      });
-    }
-  } else if (selectedFiles.length === 0 && mode === "current") {
+  if (selectedFiles.length === 0 && mode === "current") {
     briefing.push({
       type: "정상",
       title: "현재 로컬 diff가 없음",
@@ -2157,9 +2243,7 @@ function buildScenario(id, label, description, repos) {
   const allPositioned = assignPositions(prioritizedNodes);
   const allEdges = edgesForVisibleNodes(allPositioned, edges);
   const positioned = assignPositions(
-    isEngineFlow
-      ? nodes
-      : selectVisibleGraphNodes(nodes, config.scanLimits.nodesPerScenario),
+    selectVisibleGraphNodes(nodes, config.scanLimits.nodesPerScenario),
   );
   const visibleEdges = edgesForVisibleNodes(positioned, edges);
 
@@ -2167,17 +2251,17 @@ function buildScenario(id, label, description, repos) {
     id,
     label,
     description,
-    branch: recentCommitLabel(repos),
+    branch: sourceRevisionLabel(repos),
     compare: mode === "team"
       ? "원격 최신 커밋과 비교"
       : mode === "contract"
         ? "extractor graph"
-        : mode === "engine"
-          ? "engine runtime/training flow"
+        : repos.some((repo) => repo.sourceKind === "folder")
+          ? repos.some((repo) => repo.sourceKind === "git")
+            ? "Git diff + 이전 파일 스캔"
+            : "이전 파일 스캔과 비교"
           : "최근 커밋 + local diff",
-    focusNodeId: isEngineFlow
-      ? "engine-flow:analysis:1-start"
-      : positioned.find((item) => item.data.status === "active")?.id ?? positioned[0]?.id ?? "",
+    focusNodeId: positioned.find((item) => item.data.status === "active")?.id ?? positioned[0]?.id ?? "",
     files: files.slice(0, config.scanLimits.changedFiles),
     featureChanges,
     briefing,
@@ -2530,7 +2614,6 @@ function assignPositions(nodes) {
   const stageOrder = [
     "repo",
     "file",
-    ...Array.from({ length: 12 }, (_, index) => `flow-${index + 1}`),
     "surface",
     "api",
     "downstream",
@@ -2550,12 +2633,7 @@ function assignPositions(nodes) {
     if (group.length === 0) continue;
 
     const lanes = Math.max(1, Math.ceil(group.length / maxRows));
-    const orderedGroup = group
-      .map((item, index) => ({ item, index }))
-      .sort((a, b) => nodeLaneOrder(a.item) - nodeLaneOrder(b.item) || a.index - b.index)
-      .map(({ item }) => item);
-
-    orderedGroup.forEach((item, index) => {
+    group.forEach((item, index) => {
       const lane = Math.floor(index / maxRows);
       const row = index % maxRows;
       positioned.push({
@@ -2599,19 +2677,10 @@ function edgesForVisibleNodes(nodes, edges) {
 function nodeStage(item) {
   if (item.id.startsWith("repo:")) return "repo";
   if (item.id.startsWith("file:")) return "file";
-  const flowStage = item.id.match(/^engine-flow:[^:]+:(\d+)-/);
-  if (flowStage) return `flow-${flowStage[1]}`;
   if (item.data.kind === "ui" || item.data.kind === "wrapper") return "surface";
   if (item.data.kind === "api") return "api";
   if (item.data.kind === "handler" || item.data.kind === "function") return "downstream";
   return "downstream";
-}
-
-function nodeLaneOrder(item) {
-  if (item.id.startsWith("engine-flow:analysis:")) return 0;
-  if (item.id.startsWith("engine-flow:training:")) return 1;
-  if (item.id.startsWith("engine-flow:snt:")) return 2;
-  return 0;
 }
 
 function kindColumn(kind) {
@@ -2760,36 +2829,6 @@ function connectStaticCodeEdges(selectedEntities, codeEdges, edges) {
   }
 }
 
-function connectEngineFlows(engineFlows, edges) {
-  const byGroup = new Map();
-
-  for (const item of engineFlows) {
-    const group = byGroup.get(item.flowGroup) ?? [];
-    group.push(item);
-    byGroup.set(item.flowGroup, group);
-  }
-
-  for (const [groupName, groupItems] of byGroup.entries()) {
-    if (groupName === "error-code") continue;
-    const orderedItems = groupItems.sort(
-      (a, b) => Number(a.flowStep ?? 0) - Number(b.flowStep ?? 0),
-    );
-
-    for (let index = 1; index < orderedItems.length; index += 1) {
-      const previous = orderedItems[index - 1];
-      const current = orderedItems[index];
-      edges.push(
-        edge(
-          entityId(previous),
-          entityId(current),
-          current.transition ?? (groupName === "training" ? "학습" : "분석"),
-          current.status,
-        ),
-      );
-    }
-  }
-}
-
 function connectContracts(routes, docs, tests, edges) {
   for (const route of routes) {
     const routeId = entityId(route);
@@ -2837,21 +2876,27 @@ function parseLatestCommit(value, fallbackHash) {
   };
 }
 
-function recentCommitLabel(repos) {
+function sourceRevisionLabel(repos) {
   const candidates = repos
     .filter((repo) => repo.latestCommit?.hash)
     .sort((left, right) =>
       String(right.latestCommit?.at ?? "").localeCompare(String(left.latestCommit?.at ?? "")),
     );
 
-  if (candidates.length === 0) return "최근 업데이트 커밋 없음";
+  if (candidates.length === 0) {
+    const folderCount = repos.filter((repo) => repo.sourceKind === "folder").length;
+    return folderCount > 0
+      ? `파일 기준점 ${folderCount}개 연결`
+      : "최근 업데이트 커밋 없음";
+  }
 
   const items = candidates.map((repo) => {
     const name = compactRepoName(repo.name);
     return `${name} ${repo.latestCommit.hash}`;
   });
 
-  return `최근 반영 커밋 ${items.join(" / ")}`;
+  const folderCount = repos.filter((repo) => repo.sourceKind === "folder").length;
+  return `최근 반영 커밋 ${items.join(" / ")}${folderCount > 0 ? ` / 파일 기준점 ${folderCount}개` : ""}`;
 }
 
 function compactRepoName(name) {

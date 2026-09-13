@@ -9,6 +9,7 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const configPath = path.join(rootDir, "whereami.config.json");
 const defaultConfig = {
   repoRoots: [],
+  folders: [],
   include: [],
   scanServerPort: 3010,
   watchIntervalMs: 60 * 60 * 1000,
@@ -80,6 +81,7 @@ const server = createServer(async (request, response) => {
       liveWatch,
       watchDebounceMs,
       watchedRepos: repoWatchers.length,
+      watchedSources: repoWatchers.length,
       lastResult,
     });
     return;
@@ -191,10 +193,18 @@ function startRepoWatchers() {
 }
 
 function discoverRepos() {
-  const explicitRepos = (config.repos ?? []).map((repo) => ({
-    name: repo.name ?? path.basename(repo.path),
-    path: repo.path,
-  }));
+  const explicitRepos = (config.repos ?? [])
+    .filter((repo) => repo?.path)
+    .map((repo) => ({
+      name: repo.name ?? path.basename(repo.path),
+      path: repo.path,
+    }));
+  const explicitFolders = (config.folders ?? [])
+    .filter((folder) => folder?.path)
+    .map((folder) => ({
+      name: folder.name ?? path.basename(folder.path),
+      path: folder.path,
+    }));
   const discovered = [];
 
   for (const root of config.repoRoots ?? []) {
@@ -213,7 +223,7 @@ function discoverRepos() {
   }
 
   const byPath = new Map();
-  [...explicitRepos, ...discovered].forEach((repo) => {
+  [...discovered, ...explicitRepos, ...explicitFolders].forEach((repo) => {
     byPath.set(path.resolve(repo.path), {
       ...repo,
       path: path.resolve(repo.path),
