@@ -8,18 +8,18 @@
 
 [공개 데모](https://where-am-i-soil0119.soil0119.chatgpt.site/) · [기술 소개](https://dev.to/soil0119/how-i-built-a-local-first-impact-graph-for-multi-repository-code-changes-3kkg)
 
-여러 저장소를 일일이 오가며 추적하지 않아도 현재 변경이 파일·API·서비스·DB·테스트 어디까지 영향을 주는지 보여주는 로컬 우선(local-first) 영향 그래프입니다.
+GitHub 없이도 로컬 Git 저장소나 일반 소스 폴더의 변경이 파일·API·서비스·DB·테스트 어디까지 영향을 주는지 보여주는 로컬 우선(local-first) 영향 그래프입니다.
 
 > [!IMPORTANT]
 > Where am I는 초기 MVP입니다. 분석 결과를 배포·보안·호환성 판단의 유일한 근거로 사용하지 마세요.
 
 ## 왜 Where am I인가요?
 
-멀티 저장소 환경에서는 작은 API 변경도 프론트엔드 wrapper, 백엔드 handler, 내부 서비스, DB schema, 문서와 테스트까지 이어집니다. Where am I는 로컬 Git 저장소에서 근거를 수집하고, 변경과 연결 관계를 클릭 가능한 영향 그래프로 보여줍니다.
+여러 코드 소스를 함께 다루는 환경에서는 작은 API 변경도 프론트엔드 wrapper, 백엔드 handler, 내부 서비스, DB schema, 문서와 테스트까지 이어집니다. Where am I는 로컬 Git 저장소나 일반 폴더에서 근거를 수집하고, 변경과 연결 관계를 클릭 가능한 영향 그래프로 보여줍니다.
 
 ## 주요 기능
 
-- 현재 작업 트리 diff를 기준으로 영향받는 코드 흐름 표시
+- 현재 작업 트리 diff 또는 연결한 폴더의 파일 변화를 기준으로 영향받는 코드 흐름 표시
 - 팀원 PR과 원격 커밋의 API·schema 변경 브리핑
 - API path, handler, wrapper, OpenAPI 문서와 테스트 연결 확인
 - 여러 저장소의 API catalog 통합 조회
@@ -28,7 +28,7 @@
 
 ```mermaid
 flowchart LR
-  A[Git diff / team update] --> B[Local scanner]
+  A[Git diff / folder baseline / team update] --> B[Local scanner]
   B --> C[Files and functions]
   B --> D[APIs and handlers]
   B --> E[Databases / external calls]
@@ -42,7 +42,7 @@ flowchart LR
 ### 요구 사항
 
 - Node.js `>=22.13.0`
-- 분석할 로컬 Git 저장소 한 개 이상
+- 분석할 로컬 Git 저장소 또는 일반 소스 폴더 한 개 이상
 
 ### 설치 및 실행
 
@@ -86,6 +86,27 @@ Copy-Item whereami.config.example.json whereami.config.json
 }
 ```
 
+### Git 또는 GitHub 없이 폴더 연결
+
+일반 소스 폴더는 `folders`에 추가합니다. 첫 스캔이 로컬 파일 기준점을
+생성하고, 이후 스캔부터 그 기준점과 비교해 생성·수정·삭제된 파일을 표시합니다.
+
+```json
+{
+  "folders": [
+    {
+      "name": "my-local-project",
+      "path": "/absolute/path/to/my-local-project",
+      "type": "platform"
+    }
+  ],
+  "autoFetch": false
+}
+```
+
+폴더 기준점은 Git에서 제외된 로컬 snapshot에만 저장됩니다. Git 저장소와
+일반 폴더를 함께 연결할 수 있고, 실시간 watcher도 폴더 변경 후 다시 스캔합니다.
+
 전체 설정과 스캔 제한값은 [`whereami.config.example.json`](./whereami.config.example.json)을 참고하세요.
 
 ## 명령어
@@ -102,15 +123,16 @@ Copy-Item whereami.config.example.json whereami.config.json
 
 ## 데이터와 개인정보 보호
 
-Where am I는 설정한 저장소의 소스 코드를 로컬에서 읽습니다. 생성되는 `whereami.config.json`과 `public/whereami-snapshot.json`에는 다음 정보가 포함될 수 있습니다.
+Where am I는 설정한 저장소와 폴더의 소스 코드를 로컬에서 읽습니다. 생성되는 `whereami.config.json`과 `public/whereami-snapshot.json`에는 다음 정보가 포함될 수 있습니다.
 
-- 로컬 절대 경로와 저장소 이름
+- 로컬 절대 경로와 소스 이름
 - branch, commit, PR 제목과 변경 파일
+- 폴더 기준점의 콘텐츠 해시와 라인 수
 - 함수명, API path, 코드 근거 라인
 
 두 파일은 기본적으로 Git에서 제외됩니다. Production build도 로컬 snapshot을 결과물에서 제거하고 내장 샘플 데이터를 표시합니다. 그래도 화면을 캡처하거나 결과를 공유하기 전에는 민감한 정보가 없는지 직접 확인하세요.
 
-`autoFetch`를 활성화하면 스캔 시 각 저장소의 원격 Git 정보를 가져옵니다. 네트워크 접근을 원하지 않으면 `false`로 설정하거나 `npm run scan -- --no-fetch`를 사용하세요.
+`autoFetch`를 활성화하면 스캔 시 각 Git 저장소의 원격 정보를 가져옵니다. 폴더 소스는 원격 정보를 가져오지 않습니다. 네트워크 접근을 원하지 않으면 `false`로 설정하거나 `npm run scan -- --no-fetch`를 사용하세요.
 
 ## 현재 한계
 

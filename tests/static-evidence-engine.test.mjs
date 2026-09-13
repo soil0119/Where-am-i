@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -115,6 +115,10 @@ async def train_model():
   assert.equal(scan.status, 0, scan.stderr);
 
   const snapshot = JSON.parse(await readFile(outputPath, "utf8"));
+  assert.deepEqual(
+    snapshot.scenarios.map((scenario) => scenario.id),
+    ["current-work", "team-briefing", "contract-check"],
+  );
   const currentWork = snapshot.scenarios.find(
     (scenario) => scenario.id === "current-work",
   );
@@ -140,6 +144,98 @@ async def train_model():
   assert.ok(evidenceLines.some((line) => line.includes("SNT-401")));
   assert.ok(snapshot.repos[0].codeFactCount > 0);
 });
+
+test("scanner tracks changes in a linked folder without Git", async () => {
+  const tempRoot = await mkdtemp(path.join(tmpdir(), "whereami-folder-"));
+  const folderPath = path.join(tempRoot, "plain-source");
+  const outputPath = path.join(tempRoot, "snapshot.json");
+  const configPath = path.join(tempRoot, "whereami.config.json");
+  const apiFile = path.join(folderPath, "frontend", "src", "api", "items.ts");
+  const removedFile = path.join(folderPath, "docs", "old.md");
+
+  await mkdir(path.dirname(apiFile), { recursive: true });
+  await mkdir(path.dirname(removedFile), { recursive: true });
+  await writeFile(apiFile, "export const listItems = () => fetch('/api/items');\n");
+  await writeFile(removedFile, "# Old behavior\n");
+  await writeFile(
+    configPath,
+    JSON.stringify(
+      {
+        folders: [{ name: "plain-source", path: folderPath, type: "platform" }],
+        autoFetch: false,
+        output: outputPath,
+        scanLimits: {
+          filesPerRepo: 200,
+          folderFilesPerSource: 200,
+          apiFilesPerRepo: 200,
+          apiNodesPerScenario: 80,
+          changedFiles: 20,
+          nodesPerScenario: 80,
+          codeFactsPerRepo: 200,
+          codeEdgesPerRepo: 200,
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  const firstScan = scanWithConfig(configPath);
+  assert.equal(firstScan.status, 0, firstScan.stderr);
+  const baseline = JSON.parse(await readFile(outputPath, "utf8"));
+  assert.equal(baseline.repos[0].sourceKind, "folder");
+  assert.equal(baseline.repos[0].changedCount, 0);
+  assert.deepEqual(
+    baseline.scenarios.map((scenario) => scenario.id),
+    ["current-work", "contract-check"],
+  );
+  assert.ok(baseline.repos[0].fileState["frontend/src/api/items.ts"]);
+  assert.ok(!baseline.warnings.some((warning) => warning.includes("git repo가 아님")));
+
+  await writeFile(
+    apiFile,
+    "export const listItems = () => fetch('/api/items?active=true');\n",
+  );
+  await rm(removedFile);
+  await mkdir(path.join(folderPath, "tests"), { recursive: true });
+  await writeFile(
+    path.join(folderPath, "tests", "items.test.ts"),
+    "test('items', () => expect(true).toBe(true));\n",
+  );
+
+  const secondScan = scanWithConfig(configPath);
+  assert.equal(secondScan.status, 0, secondScan.stderr);
+  const snapshot = JSON.parse(await readFile(outputPath, "utf8"));
+  const currentWork = snapshot.scenarios.find(
+    (scenario) => scenario.id === "current-work",
+  );
+  const fileNodes = (currentWork.allNodes ?? currentWork.nodes).filter(
+    (node) => node.data.kind === "file" || node.data.kind === "ui" || node.data.kind === "test" || node.data.kind === "docs",
+  );
+  const changedPaths = new Set(currentWork.files);
+
+  assert.equal(snapshot.repos[0].changedCount, 3);
+  assert.ok(changedPaths.has("plain-source/frontend/src/api/items.ts"));
+  assert.ok(changedPaths.has("plain-source/docs/old.md"));
+  assert.ok(changedPaths.has("plain-source/tests/items.test.ts"));
+  assert.ok(fileNodes.some((node) => node.data.path === "docs/old.md" && node.data.status === "risk"));
+  assert.equal(snapshot.scanDelta.hasChanges, true);
+});
+
+function scanWithConfig(configPath) {
+  return spawnSync(
+    process.execPath,
+    ["scripts/scan-repos.mjs", "--quiet", "--no-fetch"],
+    {
+      cwd: projectRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        WHEREAMI_CONFIG_PATH: configPath,
+      },
+    },
+  );
+}
 
 function run(command, args, cwd) {
   const result = spawnSync(command, args, {

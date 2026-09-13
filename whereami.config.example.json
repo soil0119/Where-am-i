@@ -1,5 +1,6 @@
 {
   "repoRoots": ["/absolute/path/to/your/workspace"],
+  "folders": [],
   "include": ["your-repo-prefix"],
   "baseBranch": "develop",
   "autoFetch": true,
@@ -10,6 +11,7 @@
   "watchIntervalMs": 3600000,
   "scanLimits": {
     "filesPerRepo": 900,
+    "folderFilesPerSource": 5000,
     "apiFilesPerRepo": 2400,
     "apiNodesPerScenario": 800,
     "changedFiles": 80,
