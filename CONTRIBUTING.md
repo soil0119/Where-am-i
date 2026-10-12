@@ -37,6 +37,12 @@ On Windows PowerShell, use `Copy-Item whereami.config.example.json whereami.conf
 
 ## Before opening a pull request
 
+### Write the PR yourself
+
+PR titles and descriptions must be written directly by the contributor in their own words. Do not use AI to draft, generate, summarize, or rewrite them. Explain the changes you made, why you made them, and what you actually verified; you should be able to answer questions about the diff.
+
+Fill out the [PR template](./.github/pull_request_template.md) yourself. Keep its prompts, but replace the guidance with your own explanation. Report actual check results as passed, failed, or not run with a reason, and identify how they were obtained; never mark an unrun check as passed. Complete the authorship confirmation before submitting. PRs without a contributor-written explanation will be returned for revision.
+
 Run the same core checks used by CI:
 
 ```bash
